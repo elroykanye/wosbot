@@ -104,6 +104,10 @@ public final class SidebarNavigator {
         }
 
         RawImageData frame = emu.captureScreen(device);
+        if (frame == null || selectedSection(frame).orElse(null) != destination.section()) {
+            log.warn("Sidebar state changed before scanning for " + destination);
+            return SidebarRowLookup.sidebarUnavailable();
+        }
         ImageSearchResultData current = locateRowIcon(destination, frame);
         if (current.isFound()) {
             return SidebarRowLookup.fromRow(current);
