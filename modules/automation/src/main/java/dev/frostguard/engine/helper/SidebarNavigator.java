@@ -16,6 +16,7 @@ import dev.frostguard.engine.nav.CommonGameAreas;
 import dev.frostguard.engine.nav.SidebarDestination;
 import dev.frostguard.engine.nav.SidebarFrameClassifier;
 import dev.frostguard.engine.nav.SidebarRowAction;
+import dev.frostguard.engine.nav.SidebarRowLookup;
 import dev.frostguard.engine.nav.SidebarSection;
 import dev.frostguard.engine.nav.SidebarViewportChangeDetector;
 import dev.frostguard.engine.nav.SearchConfigConstants;
@@ -91,23 +92,28 @@ public final class SidebarNavigator {
 
     /** Finds a row from its left icon in the current viewport and after every settled scroll. */
     public ImageSearchResultData findRow(SidebarDestination destination) {
+        return findRowWithStatus(destination).rowIcon();
+    }
+
+    /** Distinguishes a failed sidebar transition from a completed scan with no matching row. */
+    public SidebarRowLookup findRowWithStatus(SidebarDestination destination) {
         if (!openSection(destination.section())) {
-            return ImageSearchResultData.miss();
+            return SidebarRowLookup.sidebarUnavailable();
         }
 
         RawImageData frame = emu.captureScreen(device);
         ImageSearchResultData current = locateRowIcon(destination, frame);
         if (current.isFound()) {
-            return current;
+            return SidebarRowLookup.fromRow(current);
         }
 
         ScrollScanResult bottomScan = scan(destination, ScrollDirection.TOWARD_BOTTOM, frame);
         if (bottomScan.rowIcon().isFound()) {
-            return bottomScan.rowIcon();
+            return SidebarRowLookup.fromRow(bottomScan.rowIcon());
         }
         log.info("Sidebar destination unavailable after bounded icon scan: " + destination
                 + " bottomBoundary=" + bottomScan.boundaryReached());
-        return ImageSearchResultData.miss();
+        return SidebarRowLookup.fromRow(ImageSearchResultData.miss());
     }
 
     public boolean close() {
