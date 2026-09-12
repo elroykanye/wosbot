@@ -30,6 +30,8 @@ public final class SidebarNavigator {
     static final int TRANSITION_POLL_MS = 200;
     static final int TRANSITION_POLL_CHECKS = 9;
     static final int MAX_TRIGGER_TAPS = 2;
+    static final int SIDEBAR_OPEN_SETTLE_MS = SECTION_SETTLE_MS
+            + (TRANSITION_POLL_CHECKS - 1) * TRANSITION_POLL_MS;
     static final int SCROLL_SETTLE_MS = 2_000;
     static final int SCROLL_DISTANCE_PX = 120;
     private static final int SCROLL_DURATION_MS = 500;

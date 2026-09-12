@@ -21,6 +21,11 @@ import dev.frostguard.engine.nav.SidebarSection;
 class SidebarNavigatorOpenPolicyTest {
 
     @Test
+    void allowsTheSidebarAnimationToFinishBeforeClassifyingIt() {
+        assertEquals(2_000, SidebarNavigator.SIDEBAR_OPEN_SETTLE_MS);
+    }
+
+    @Test
     void downwardScanUsesShortOverlappingGesturesAndWaitsForTheList() {
         assertEquals(SidebarNavigator.SCROLL_DISTANCE_PX,
                 Math.abs(CommonGameAreas.SIDEBAR_SCROLL_TOWARD_BOTTOM_FROM.getY()
