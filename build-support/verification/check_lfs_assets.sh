@@ -17,7 +17,10 @@ cd "${workspace}"
 
 git lfs pull
 
-mapfile -t assets < <(git lfs ls-files --name-only)
+assets=()
+while IFS= read -r asset; do
+  assets+=("${asset}")
+done < <(git lfs ls-files --name-only)
 
 # An empty list would make every check below vacuously succeed, which is
 # exactly the failure mode this script exists to prevent.
@@ -60,7 +63,7 @@ for asset in "${assets[@]}"; do
     continue
   fi
   # Every real asset here is far larger than any stub could be.
-  size="$(stat -c%s "${asset}")"
+  size="$(wc -c < "${asset}" | tr -d '[:space:]')"
   if [[ "${size}" -lt 10240 ]]; then
     echo "::error file=${asset}::LFS asset is implausibly small (${size} bytes)."
     failed=1
