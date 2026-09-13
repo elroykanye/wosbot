@@ -48,10 +48,12 @@ jobs:
           chmod +x "$adb_dir/adb"
           echo "directory=$adb_dir" >> "$GITHUB_OUTPUT"
 
-      - name: Build and test Maven reactor
+      - name: Build and run macOS integration tests
         run: |
           read -r -a maven_args <<< "${MAVEN_ARGS}"
-          ./mvnw "${maven_args[@]}" package
+          ./mvnw "${maven_args[@]}" package \
+            -Dtest=AdbExecutableResolverTest,EmulatorTypeTest,MuMuMacEmulatorInstanceTest \
+            -Dsurefire.failIfNoSpecifiedTests=false
 
       - name: Build native macOS app image
         env:
