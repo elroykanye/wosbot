@@ -19,6 +19,21 @@ def properties(element: ET.Element) -> dict[str, str]:
 
 
 class ChannelPackagingTest(unittest.TestCase):
+    def test_macos_beta_builds_native_apple_silicon_app(self):
+        workflow = (REPO_ROOT / ".github/workflows/macos-test-build.yml").read_text(
+            encoding="utf-8")
+        pom = (REPO_ROOT / "packaging/desktop/pom.xml").read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("macos-15", workflow)
+        self.assertIn("arm64", workflow)
+        self.assertNotIn("macos-15-intel", workflow)
+        self.assertIn("brew install android-platform-tools tesseract", workflow)
+        self.assertIn("verify_macos_app_image.py", workflow)
+        self.assertIn("-Pmacos-app-image,windows-nightly", workflow)
+        self.assertIn("<id>macos-app-image</id>", pom)
+        self.assertIn("<frostguard.adb.runtime.dir>", pom)
+
     def test_pr_ci_and_native_release_are_separate_workflows(self):
         workflows = REPO_ROOT / ".github/workflows"
         ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

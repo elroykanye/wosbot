@@ -146,6 +146,9 @@ public class EmuConfigLayoutController {
 		String activeEmulatorKey = globalConfig.get(ConfigurationKeyEnum.CURRENT_EMULATOR_STRING.name());
 
 		for (EmulatorType kind : EmulatorType.values()) {
+			if (!kind.supportsCurrentPlatform()) {
+				continue;
+			}
 			String resolvedPath = globalConfig.getOrDefault(kind.getConfigKey(), kind.getDefaultPath());
 			EmulatorAux entry = new EmulatorAux(kind, resolvedPath);
 			entry.setActive(kind.name().equals(activeEmulatorKey));
@@ -223,7 +226,10 @@ public class EmuConfigLayoutController {
 			@Override
 			protected void updateItem(Void item, boolean empty) {
 				super.updateItem(item, empty);
-				setGraphic(empty ? null : browseBtn);
+				boolean pathRequired = !empty
+						&& getTableView().getItems().get(getIndex()).getEmulatorType()
+								.requiresExecutablePath();
+				setGraphic(pathRequired ? browseBtn : null);
 			}
 		});
 	}

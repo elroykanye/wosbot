@@ -408,9 +408,10 @@ public class LauncherLayoutController implements IProfileLoadListener, StaminaCh
         }
         boolean activeEmulatorValid = false;
 
-        if (null != activeEmulator) {
+        if (null != activeEmulator && activeEmulator.supportsCurrentPlatform()) {
             String activePath = globalConfig.get(activeEmulator.getConfigKey());
-            if (activePath != null && new File(activePath).exists()) {
+            if (!activeEmulator.requiresExecutablePath()
+                    || (activePath != null && new File(activePath).exists())) {
                 activeEmulatorValid = true;
             } else {
                 ScheduleService.obtain().persistEmulatorPath(activeEmulator.getConfigKey(), null);
@@ -419,8 +420,15 @@ public class LauncherLayoutController implements IProfileLoadListener, StaminaCh
 
         List<EmulatorType> foundEmulators = new ArrayList<>();
         for (EmulatorType emulator : EmulatorType.values()) {
+            if (!emulator.supportsCurrentPlatform())
+                continue;
             if (activeEmulator == emulator)
                 continue;
+
+            if (!emulator.requiresExecutablePath()) {
+                foundEmulators.add(emulator);
+                continue;
+            }
 
             String emulatorPath = globalConfig.get(emulator.getConfigKey());
             if (emulatorPath != null && new File(emulatorPath).exists()) {
@@ -467,6 +475,8 @@ public class LauncherLayoutController implements IProfileLoadListener, StaminaCh
 
         // Add found emulators first
         for (EmulatorType emulator : EmulatorType.values()) {
+            if (!emulator.supportsCurrentPlatform())
+                continue;
             if (foundEmulators.contains(emulator)) {
                 ButtonType btnType = new ButtonType(emulator.getDisplayName(), ButtonBar.ButtonData.OK_DONE);
                 buttons.add(btnType);
@@ -476,6 +486,8 @@ public class LauncherLayoutController implements IProfileLoadListener, StaminaCh
 
         // Add not found emulators next
         for (EmulatorType emulator : EmulatorType.values()) {
+            if (!emulator.supportsCurrentPlatform())
+                continue;
             if (!foundEmulators.contains(emulator)) {
                 ButtonType btnType = new ButtonType(emulator.getDisplayName(), ButtonBar.ButtonData.OK_DONE);
                 buttons.add(btnType);
@@ -510,6 +522,11 @@ public class LauncherLayoutController implements IProfileLoadListener, StaminaCh
     }
 
     private void selectEmulatorManually(EmulatorType selectedEmulator) { /* internal */
+        if (!selectedEmulator.requiresExecutablePath()) {
+            ScheduleService.obtain().persistEmulatorPath(
+                    ConfigurationKeyEnum.CURRENT_EMULATOR_STRING.name(), selectedEmulator.name());
+            return;
+        }
         FileChooser fileChooser = new FileChooser();
         fileChooser.setTitle("Select Emulator Executable for " + selectedEmulator.getDisplayName());
 

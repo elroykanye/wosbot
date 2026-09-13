@@ -92,9 +92,10 @@ public class HeadlessApp {
 		}
 		boolean activeEmulatorValid = false;
 
-		if (activeEmulator != null) {
+		if (activeEmulator != null && activeEmulator.supportsCurrentPlatform()) {
 			String activePath = globalConfig.get(activeEmulator.getConfigKey());
-			if (activePath != null && new File(activePath).exists()) {
+			if (!activeEmulator.requiresExecutablePath()
+					|| (activePath != null && new File(activePath).exists())) {
 				activeEmulatorValid = true;
 			} else {
 				ScheduleService.obtain().persistEmulatorPath(activeEmulator.getConfigKey(), null);

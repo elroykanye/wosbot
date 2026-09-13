@@ -1,0 +1,103 @@
+name: Test build — macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-test-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAVEN_ARGS: "-B --no-transfer-progress -Dstyle.color=never"
+  PRODUCT_NAME: "Frostguard Nightly"
+
+jobs:
+  package:
+    name: Build macOS Apple Silicon test app
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Verify Git LFS assets are real binaries
+        run: build-support/verification/check_lfs_assets.sh
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install macOS runtime dependencies
+        run: brew install android-platform-tools tesseract
+
+      - name: Stage native ADB
+        id: adb
+        run: |
+          adb_dir="$RUNNER_TEMP/frostguard-adb"
+          mkdir -p "$adb_dir"
+          cp -L "$(command -v adb)" "$adb_dir/adb"
+          chmod +x "$adb_dir/adb"
+          echo "directory=$adb_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test Maven reactor
+        run: |
+          read -r -a maven_args <<< "${MAVEN_ARGS}"
+          ./mvnw "${maven_args[@]}" package
+
+      - name: Build native macOS app image
+        env:
+          ADB_RUNTIME_DIR: ${{ steps.adb.outputs.directory }}
+        run: |
+          read -r -a maven_args <<< "${MAVEN_ARGS}"
+          ./mvnw "${maven_args[@]}" -pl packaging/desktop -am -DskipTests \
+            "-Dfrostguard.adb.runtime.dir=$ADB_RUNTIME_DIR" \
+            -Dfrostguard.pull-request-build=true \
+            -Pmacos-app-image,windows-nightly clean package
+
+      - name: Verify native app image
+        env:
+          EXPECTED_ARCH: arm64
+        run: |
+          python3 build-support/verification/verify_macos_app_image.py \
+            "packaging/desktop/target/app-image/${PRODUCT_NAME}.app" \
+            --product-name "$PRODUCT_NAME" --expected-arch "$EXPECTED_ARCH"
+
+      - name: Smoke-test application launch
+        run: |
+          launcher="packaging/desktop/target/app-image/${PRODUCT_NAME}.app/Contents/MacOS/${PRODUCT_NAME}"
+          "$launcher" >"$RUNNER_TEMP/frostguard-launch.log" 2>&1 &
+          app_pid=$!
+          for _ in {1..10}; do
+            if ! kill -0 "$app_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/frostguard-launch.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          kill "$app_pid"
+          wait "$app_pid" || true
+
+      - name: Create test ZIP
+        run: |
+          asset="Frostguard-3.0.2-Elroy-macOS-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "packaging/desktop/target/app-image/${PRODUCT_NAME}.app" "$asset"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Upload test ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: frostguard-macos-arm64
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

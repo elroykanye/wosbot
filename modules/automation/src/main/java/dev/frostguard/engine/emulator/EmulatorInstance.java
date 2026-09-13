@@ -32,6 +32,7 @@ public abstract class EmulatorInstance {
 
     protected String consolePath;
     protected AndroidDebugBridge bridge;
+    private final String adbExecutable;
 
     private final ConcurrentHashMap<String, IDevice>      devCache  = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long>         devExpiry = new ConcurrentHashMap<>();
@@ -46,7 +47,20 @@ public abstract class EmulatorInstance {
     public    abstract boolean isRunning(String idx);
 
     protected EmulatorInstance(String consolePath) {
+        this(consolePath, "");
+    }
+
+    protected EmulatorInstance(String consolePath, String adbOverride) {
         this.consolePath = consolePath;
+        this.adbExecutable = AdbExecutableResolver.resolve(
+                System.getProperty("os.name", ""),
+                java.nio.file.Path.of(System.getProperty("user.dir")),
+                consolePath,
+                adbOverride == null || adbOverride.isBlank()
+                        ? System.getProperty("frostguard.adb.path",
+                                System.getenv().getOrDefault("FROSTGUARD_ADB_PATH", ""))
+                        : adbOverride,
+                System.getenv().getOrDefault("PATH", ""));
         initBridge();
     }
 
@@ -74,18 +88,24 @@ public abstract class EmulatorInstance {
     }
 
     private String adbPath() {
-        String wd = System.getProperty("user.dir");
-        for (String sub : new String[]{"tools", "packaging/desktop/target/input/lib"}) {
-            File f = new File(wd, sub + File.separator + "adb" + File.separator + "adb.exe");
-            if (f.exists()) return f.getAbsolutePath();
+        return adbExecutable;
+    }
+
+    private ProcessBuilder adbProcess(String... arguments) {
+        List<String> command = new ArrayList<>(arguments.length + 1);
+        command.add(adbPath());
+        command.addAll(Arrays.asList(arguments));
+        ProcessBuilder builder = new ProcessBuilder(command);
+        File parent = new File(adbPath()).getAbsoluteFile().getParentFile();
+        if (new File(adbPath()).isAbsolute() && parent != null) {
+            builder.directory(parent);
         }
-        return consolePath + File.separator + "adb.exe";
+        return builder;
     }
 
     private void killAdb() {
         try {
-            Process p = new ProcessBuilder(adbPath(), "kill-server")
-                    .directory(new File(adbPath()).getParentFile()).start();
+            Process p = adbProcess("kill-server").start();
             if (!p.waitFor(10, TimeUnit.SECONDS)) p.destroyForcibly();
         } catch (Exception e) { LOG.error("kill-server failed: {}", e.getMessage()); }
     }
@@ -129,8 +149,7 @@ public abstract class EmulatorInstance {
         try {
             String ep = serial.startsWith("emulator-") ? "127.0.0.1:" + serial.substring(9) : serial;
             BoundedProcessRunner.ProcessResult result = BoundedProcessRunner.run(
-                    new ProcessBuilder(adbPath(), "connect", ep)
-                            .directory(new File(adbPath()).getParentFile()),
+                    adbProcess("connect", ep),
                     ADB_CONNECT_TIMEOUT);
             if (result.timedOut()) {
                 LOG.error("adb connect to {} did not respond within {} seconds; killed the subprocess",

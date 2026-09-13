@@ -72,12 +72,18 @@ public class EmulatorController {
         String emuStr = cfg.get(ConfigurationKeyEnum.CURRENT_EMULATOR_STRING.name());
         if (emuStr == null || emuStr.isBlank()) throw new IllegalStateException("No emulator selected");
         EmulatorType kind = EmulatorType.valueOf(emuStr);
+        if (!kind.supportsCurrentPlatform()) {
+            throw new IllegalStateException(kind.getDisplayName() + " is not supported on this computer");
+        }
         String dir = cfg.get(kind.getConfigKey());
-        if (dir == null || dir.isBlank()) throw new IllegalStateException("No path for " + kind.getDisplayName());
+        if (kind.requiresExecutablePath() && (dir == null || dir.isBlank())) {
+            throw new IllegalStateException("No path for " + kind.getDisplayName());
+        }
         backend = switch (kind) {
             case MUMU     -> new MuMuEmulatorInstance(dir);
             case MEMU     -> new MEmuEmulatorInstance(dir);
             case LDPLAYER -> new LDPlayerEmulatorInstance(dir);
+            case MUMU_MAC -> new MuMuMacEmulatorInstance(dir);
         };
         LOG.info("Backend: {}", kind.getDisplayName());
 

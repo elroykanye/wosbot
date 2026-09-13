@@ -288,6 +288,7 @@ public enum ConfigurationKeyEnum {
     // launching 3+ instances at once. Delay (ms) enforced between consecutive emulator launches.
     EMULATOR_LAUNCH_DELAY_MS_INT        ("30000",       Integer.class,  ConfigCategory.SYSTEM),
     MEMU_PATH_STRING                    ("",            String.class,   ConfigCategory.SYSTEM),
+    MUMU_MAC_PATH_STRING                ("",            String.class,   ConfigCategory.SYSTEM),
     MUMU_PATH_STRING                    ("C:\\Program Files\\Netease\\MuMuPlayer\\nx_main", String.class, ConfigCategory.SYSTEM),
     PROFILE_SWITCH_COOLDOWN_MS_INT      ("10000",       Integer.class,  ConfigCategory.SYSTEM),
     SHOP_NAVIGATION_FIRST_SWIPE_FROM_X_INT      ("600",  Integer.class, ConfigCategory.SYSTEM),
