@@ -24,14 +24,17 @@ def main() -> None:
     image = args.image.resolve()
     launcher = image / "Contents" / "MacOS" / args.product_name
     app_dir = image / "Contents" / "app"
-    runtime_java = image / "Contents" / "runtime" / "Contents" / "Home" / "bin" / "java"
+    runtime_dir = image / "Contents" / "runtime" / "Contents" / "Home"
     adb = app_dir / "lib" / "adb" / "adb"
     launcher_config = app_dir / f"{args.product_name}.cfg"
 
     require(image.is_dir(), f"App image is missing: {image}")
-    for executable in (launcher, runtime_java, adb):
+    for executable in (launcher, adb):
         require(executable.is_file(), f"Required executable is missing: {executable}")
         require(os.access(executable, os.X_OK), f"File is not executable: {executable}")
+
+    runtime_libraries = sorted(runtime_dir.rglob("*.dylib"))
+    require(runtime_libraries, f"Bundled Java runtime is missing native libraries: {runtime_dir}")
 
     require(any(app_dir.glob("frostguard-desktop-*.jar")), "Desktop jar is missing")
     require((app_dir / "lib" / "tesseract" / "eng.traineddata").is_file(),
@@ -41,7 +44,7 @@ def main() -> None:
     require("-Dfrostguard.update.pullRequestBuild=true" in config,
             "Test build must not participate in automatic updates")
 
-    for executable in (launcher, runtime_java, adb):
+    for executable in (launcher, adb, runtime_libraries[0]):
         description = subprocess.check_output(("file", str(executable)), text=True)
         require(args.expected_arch in description,
                 f"Wrong architecture for {executable}: {description.strip()}")
