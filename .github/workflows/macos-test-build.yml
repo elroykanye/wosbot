@@ -2,9 +2,14 @@ name: Test build — macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the tested ZIP as the Elroy macOS prerelease
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: macos-test-build-${{ github.ref }}
@@ -103,3 +108,16 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: Publish macOS prerelease
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v3.0.2-elroy.2"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --prerelease \
+              --title "Frostguard 3.0.2 - Apple Silicon test build" \
+              --notes "Unsigned Apple Silicon beta for MuMuPlayer for Mac. Install Tesseract with Homebrew first. This build passed native arm64 verification and launch smoke testing, but still needs real MuMu and Whiteout Survival testing. Frostguard is maintained upstream by Shederator and contributors; this fork retains the original AGPL-3.0 license and source history."
+          fi
+          gh release upload "$tag" "$ASSET" --clobber
