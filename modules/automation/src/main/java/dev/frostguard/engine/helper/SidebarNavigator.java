@@ -30,8 +30,7 @@ public final class SidebarNavigator {
     static final int TRANSITION_POLL_MS = 200;
     static final int TRANSITION_POLL_CHECKS = 9;
     static final int MAX_TRIGGER_TAPS = 2;
-    static final int SIDEBAR_OPEN_SETTLE_MS = SECTION_SETTLE_MS
-            + (TRANSITION_POLL_CHECKS - 1) * TRANSITION_POLL_MS;
+    static final int SIDEBAR_OPEN_SETTLE_MS = 2_000;
     static final int SCROLL_SETTLE_MS = 2_000;
     static final int SCROLL_DISTANCE_PX = 120;
     private static final int SCROLL_DURATION_MS = 500;
@@ -155,7 +154,7 @@ public final class SidebarNavigator {
                 triggerTaps++;
                 log.debug("Sidebar closed/unknown; trigger tap " + triggerTaps + "/" + MAX_TRIGGER_TAPS
                         + " before selecting " + target);
-                taps.tapInside(CommonGameAreas.LEFT_MENU_TRIGGER, 1, SECTION_SETTLE_MS);
+                taps.tapInside(CommonGameAreas.LEFT_MENU_TRIGGER, 1, SIDEBAR_OPEN_SETTLE_MS);
 
                 TransitionObservation observation = awaitSection(Optional::isPresent);
                 current = observation.section();
@@ -176,9 +175,10 @@ public final class SidebarNavigator {
                     break;
                 }
                 boolean rootScreen = retryState.rootScreen();
-                if (!shouldRetryTrigger(triggerTaps, current, rootScreen)) {
+                if (!shouldRetryTrigger(triggerTaps, observation, current, rootScreen)) {
                     log.warn("Sidebar open not confirmed: triggerTaps=" + triggerTaps + "/"
                             + MAX_TRIGGER_TAPS + " checks=" + observation.checks()
+                            + " interrupted=" + observation.interrupted()
                             + " observed=closed/unknown rootScreen=" + rootScreen);
                     return false;
                 }
@@ -309,18 +309,19 @@ public final class SidebarNavigator {
         for (int check = 1; check <= TRANSITION_POLL_CHECKS; check++) {
             observed = reader.read();
             if (accepted.test(observed) || check == TRANSITION_POLL_CHECKS) {
-                return new TransitionObservation(observed, check);
+                return new TransitionObservation(observed, check, false);
             }
             if (!waiter.waitFor(TRANSITION_POLL_MS)) {
-                return new TransitionObservation(observed, check);
+                return new TransitionObservation(observed, check, true);
             }
         }
         throw new IllegalStateException("Unreachable sidebar transition polling state");
     }
 
-    static boolean shouldRetryTrigger(int triggerTaps, Optional<SidebarSection> observed,
-                                      boolean rootScreen) {
-        return triggerTaps < MAX_TRIGGER_TAPS && observed.isEmpty() && rootScreen;
+    static boolean shouldRetryTrigger(int triggerTaps, TransitionObservation observation,
+                                      Optional<SidebarSection> observed, boolean rootScreen) {
+        return !observation.interrupted() && triggerTaps < MAX_TRIGGER_TAPS
+                && observed.isEmpty() && rootScreen;
     }
 
     private boolean interruptibleWait(long milliseconds) {
@@ -336,7 +337,7 @@ public final class SidebarNavigator {
     private record ScrollScanResult(ImageSearchResultData rowIcon, RawImageData frame,
                                     boolean boundaryReached, boolean completed) {}
 
-    record TransitionObservation(Optional<SidebarSection> section, int checks) {}
+    record TransitionObservation(Optional<SidebarSection> section, int checks, boolean interrupted) {}
 
     record ScreenState(Optional<SidebarSection> section, boolean rootScreen) {}
 
