@@ -218,7 +218,7 @@ jobs:
         run: |
           $mavenArgs = $env:MAVEN_ARGS -split " "
           & .\mvnw.cmd @mavenArgs -DskipTests "-Dfrostguard.pull-request-build=true" `
-              "-Pwindows-app-image,windows-nightly" package
+              "-Pwindows-app-image,windows-nightly" clean package
 
       - name: Verify Nightly application image
         if: steps.channels.outputs.nightly == 'true'

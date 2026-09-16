@@ -271,6 +271,7 @@ class ChannelPackagingTest(unittest.TestCase):
             [stable_build, donor_build, stable_verify, stable_installer,
              stable_upload, nightly_build, nightly_installer])
         self.assertNotIn("Reset packaging output before Nightly build", installers)
+        self.assertIn('"-Pwindows-app-image,windows-nightly" clean package', installers)
         self.assertIn('gh api --method DELETE `', workflow)
         self.assertIn('releases/$($release.id)', workflow)
         immutable_tag_create = workflow.index(
