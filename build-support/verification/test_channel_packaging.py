@@ -255,6 +255,7 @@ class ChannelPackagingTest(unittest.TestCase):
         self.assertIn("-ine $file.Sha256", helper)
         self.assertIn("stable_candidate_version", installers)
         self.assertIn("stable_candidate_windows_version", installers)
+        self.assertIn("publish_elroy_release", installers)
         self.assertIn("--candidate-windows-version", installers)
         stable_build = installers.index("Build Stable application image")
         donor_build = installers.index("Build accepted Nightly bootstrap donor for Stable")
@@ -272,6 +273,8 @@ class ChannelPackagingTest(unittest.TestCase):
              stable_upload, nightly_build, nightly_installer])
         self.assertNotIn("Reset packaging output before Nightly build", installers)
         self.assertIn('"-Pwindows-app-image,windows-nightly" clean package', installers)
+        self.assertIn("Publish verified Elroy Nightly ZIP", installers)
+        self.assertIn("gh release create $env:TAG $env:ZIP", installers)
         self.assertIn('gh api --method DELETE `', workflow)
         self.assertIn('releases/$($release.id)', workflow)
         immutable_tag_create = workflow.index(
