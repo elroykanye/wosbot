@@ -14,8 +14,9 @@ import java.util.OptionalInt;
  */
 final class BearSessionCoordinator {
 
-    private static final Duration DEFAULT_LAUNCH_WINDOW = Duration.ofMinutes(5).plusSeconds(12);
-    private static final Duration NORMAL_POLL = Duration.ofSeconds(1);
+    private static final Duration MINIMUM_OWN_RALLY_CUTOFF = Duration.ofMinutes(5).plusSeconds(30);
+    private static final Duration FINAL_EXISTING_RALLY_WINDOW = Duration.ofMinutes(5);
+    private static final Duration NORMAL_POLL = Duration.ZERO;
     private static final Duration RETURN_GUARD = Duration.ofSeconds(2);
     private static final int EXTRA_JOIN_ATTEMPTS = 6;
 
@@ -187,8 +188,9 @@ final class BearSessionCoordinator {
     private OptionalInt trackedOwnSlot = OptionalInt.empty();
     private boolean mayAdoptExisting = true;
     private int formationIndex;
-    private Duration launchWindow = DEFAULT_LAUNCH_WINDOW;
+    private Duration ownRallyCutoff = MINIMUM_OWN_RALLY_CUTOFF;
     private boolean ownLaunchClosed;
+    private boolean finalJoinListDrained;
     private State state = State.LOCATE_BEAR;
 
     BearSessionCoordinator(
@@ -261,7 +263,12 @@ final class BearSessionCoordinator {
                 }
                 if (start.outcome() == OwnRallyStartOutcome.CONFIRMED) {
                     trackedOwnSlot = OptionalInt.of(start.slot());
-                    launchWindow = start.rallyCountdown().plus(start.oneWayTravel());
+                    Duration observedCycle = start.rallyCountdown()
+                            .plus(start.oneWayTravel().multipliedBy(2))
+                            .plus(RETURN_GUARD);
+                    ownRallyCutoff = observedCycle.compareTo(MINIMUM_OWN_RALLY_CUTOFF) > 0
+                            ? observedCycle
+                            : MINIMUM_OWN_RALLY_CUTOFF;
                     freeSlotsForJoining = Math.max(0, freeSlotsForJoining - 1);
                     transition(State.OWN_RALLY_ACTIVE);
                 } else if (start.outcome() == OwnRallyStartOutcome.ALREADY_ACTIVE) {
@@ -284,9 +291,12 @@ final class BearSessionCoordinator {
                 }
             }
 
-            if (joinRallies && freeSlotsForJoining > 0) {
+            if (joinRallies && !finalJoinListDrained && freeSlotsForJoining > 0) {
                 transition(State.FILL_JOIN_SLOTS);
-                fillJoinSlots(freeSlotsForJoining);
+                boolean listDrained = fillJoinSlots(freeSlotsForJoining);
+                if (listDrained && inFinalExistingRallyWindow()) {
+                    finalJoinListDrained = true;
+                }
             }
 
             transition(State.WAIT_FOR_NEXT_USEFUL_DEADLINE);
@@ -318,13 +328,13 @@ final class BearSessionCoordinator {
         }
     }
 
-    private void fillJoinSlots(int initiallyFreeSlots) {
+    private boolean fillJoinSlots(int initiallyFreeSlots) {
         int remaining = initiallyFreeSlots;
         int attemptsRemaining = initiallyFreeSlots * Math.max(1, joinFormations.size()) + EXTRA_JOIN_ATTEMPTS;
 
         while (remaining > 0 && attemptsRemaining-- > 0 && driver.now().isBefore(eventEnd)) {
             if (driver.cancellationRequested()) {
-                return;
+                return false;
             }
             int formation = joinFormations.get(formationIndex);
             JoinOutcome outcome = driver.joinNext(formation);
@@ -335,14 +345,18 @@ final class BearSessionCoordinator {
                 }
                 case FORMATION_UNAVAILABLE -> advanceFormation();
                 case OCR_MISS, STALE_SCREEN, NAVIGATION_FAILURE -> recover(State.FILL_JOIN_SLOTS);
-                case NO_JOINABLE_RALLY, MARCH_QUEUE_FULL -> {
-                    return;
+                case NO_JOINABLE_RALLY -> {
+                    return true;
+                }
+                case MARCH_QUEUE_FULL -> {
+                    return false;
                 }
                 case RALLY_FULL, RALLY_DEPARTED, RALLY_GONE, ALREADY_JOINED_OR_MARCHING -> {
                     // Keep the same verified formation and move to the next rally candidate.
                 }
             }
         }
+        return false;
     }
 
     private void advanceFormation() {
@@ -350,11 +364,14 @@ final class BearSessionCoordinator {
     }
 
     private boolean hasTimeForOwnRally() {
-        return !ownLaunchClosed && !driver.now().plus(launchWindow).isAfter(eventEnd);
+        return !ownLaunchClosed && driver.now().plus(ownRallyCutoff).isBefore(eventEnd);
     }
 
     private Duration nextPause(MarchSnapshot snapshot) {
         Duration untilEnd = Duration.between(driver.now(), eventEnd);
+        if (finalJoinListDrained) {
+            return untilEnd;
+        }
         Duration requested = NORMAL_POLL;
         if (trackedOwnSlot.isPresent()
                 && snapshot.ownRally().phase() == OwnRallyPhase.RETURNING
@@ -382,6 +399,10 @@ final class BearSessionCoordinator {
         driver.recover(resumeState);
         driver.pause(NORMAL_POLL);
         transition(resumeState);
+    }
+
+    private boolean inFinalExistingRallyWindow() {
+        return !driver.now().plus(FINAL_EXISTING_RALLY_WINDOW).isBefore(eventEnd);
     }
 
     private void transition(State next) {
