@@ -15,6 +15,19 @@ Run the full 30-minute Bear Hunt as one fast, state-aware session:
 
 The active Bear loop must not contain blind fixed sleeps. Screen capture and verified state changes are the pacing mechanism. Longer waits for a march return must yield to a scheduled deadline and remain cancellable; they must not hold the profile in a sleeping navigation routine.
 
+The implemented runtime order is:
+
+1. Prepare once: disable conflicting auto-join, perform configured recall/pet work, locate Bear from the real `GAME_HOME_WORLD` root anchor, and retain the World-at-Bear anchor.
+2. Read all march rows from one frame and reserve the tracked own-rally row.
+3. Before T-5:30, launch an own rally only when its tracked row is visibly idle.
+   Explicitly select five minutes and require the green tick before continuing.
+   Until that own rally is confirmed, replay Alliance → Territory → Special Buildings → configured Go → Rally; a recoverable failure must not skip ahead to joins.
+4. Fill every genuinely free join march in configured formation order.
+5. Rank visible candidates by capacity margin, remaining countdown, occupancy, then stable row position.
+6. Use fresh-frame predicates for every transition. Fixed navigation/deploy sleeps are not allowed in the active loop.
+7. Wait only for a known march-return/event-end deadline, and keep that wait cancellable.
+8. Recover from the current screen without a blind second Back tap or resetting confirmed formation/rally state.
+
 ## Facts confirmed during the live run
 
 1. An own Bear rally has a fixed five-minute preparation timer. The current three-minute assumption is wrong.
