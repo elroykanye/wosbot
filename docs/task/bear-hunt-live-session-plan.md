@@ -1,6 +1,6 @@
 # Bear Hunt live-session plan
 
-Status: live acceptance failed on 19 September 2026. The current implementation and draft PR are not release-ready. This document now describes the frame-driven replacement required before the next scheduled Bear Hunt on 21 September 2026.
+Status: the critical replacement path was implemented on PR #346 on 23 September 2026: verified local navigation, a retained Bear anchor, explicit five-minute selection, distinct page-readiness handling, and three-scan final drain. Deterministic tests pass; the PR stays draft until today's live Bear acceptance passes.
 
 ## Goal
 
@@ -406,4 +406,4 @@ Suggested performance targets for the live run:
 8. Run unit tests, recorded-frame tests, and a replay of today's complete failure trace. The replay must produce useful joins instead of the 19-attempt loop.
 9. Exercise navigation and timer/formation selection outside the live event without deploying, using current screens and sanitized captures.
 10. Build the local Elroy version only after deterministic evidence passes.
-11. Use the 21 September event as live acceptance. Keep the PR in draft until the live criteria pass.
+11. Use the next scheduled Bear as live acceptance. Keep the PR in draft until the live criteria pass.
