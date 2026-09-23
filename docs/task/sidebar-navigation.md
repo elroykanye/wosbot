@@ -16,8 +16,8 @@ exists in the supplied open-panel frames. The tap region is restricted to the in
 thin arrow at `x=6..16, y=546..554`. This stays clear of both the absolute display edge, where
 MuMu can discard a tap, and the expanded compact Marching panel behind the handle on World. A
 trigger tap is allowed only while a Home or World anchor is present.
-After the initial two-second open settle, the navigator polls fresh frames for up to
-another 1.6 seconds because live logs show that a successful tap can temporarily classify as
+After the initial 400 ms settle, the navigator polls fresh frames for up to
+roughly two seconds because live logs show that a successful tap can temporarily classify as
 closed or unknown. If no section appears and a fresh Home or World anchor still proves the root
 screen, the trigger is retried once; the second attempt is terminal. Section changes use the
 same bounded polling but never repeat the tab tap from an unknown state. Scrolls and close taps
@@ -42,6 +42,10 @@ destination scan therefore checks that initial viewport and then moves only towa
 short overlapping 120-pixel gestures. It waits two seconds for the list to settle and scans the
 icon column after every gesture. An unchanged settled icon column establishes the bottom boundary.
 The scan is bounded, and a destination action must close the sidebar to confirm the transition.
+Lighthouse Intel is the exception: after its Daily row is validated, navigation closes the sidebar
+and uses the shared Wilderness Intel shortcut opener, which confirms the Intel screen rather than
+treating a closed sidebar as transition evidence. Other destinations retain their direct row-action
+behavior.
 Code that deliberately reuses an already-open section preserves its current position; March Queue
 recovery closes and reopens Wilderness once when no visible row contains reliable queue evidence.
 

@@ -306,10 +306,11 @@ public final class SidebarNavigator {
     static TransitionObservation awaitSection(Predicate<Optional<SidebarSection>> accepted,
                                                SectionReader reader, Waiter waiter) {
         Optional<SidebarSection> observed = Optional.empty();
+        boolean interrupted = false;
         for (int check = 1; check <= TRANSITION_POLL_CHECKS; check++) {
             observed = reader.read();
             if (accepted.test(observed) || check == TRANSITION_POLL_CHECKS) {
-                return new TransitionObservation(observed, check, false);
+                return new TransitionObservation(observed, check, interrupted);
             }
             if (!waiter.waitFor(TRANSITION_POLL_MS)) {
                 return new TransitionObservation(observed, check, true);
