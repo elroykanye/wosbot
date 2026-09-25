@@ -326,6 +326,7 @@ jobs:
 
           Included in this build:
           - the working fishing workflow and its navigation/retry fixes
+          - the Bear Hunt state, own-rally confirmation, and fresh rally-list fixes
           - the other fixes currently integrated on the elroy branch
 
           Based on Frostguard by Shederator and contributors:
@@ -360,6 +361,6 @@ jobs:
           gh release create $env:TAG $env:ZIP `
               --repo $env:GITHUB_REPOSITORY `
               --target $env:GITHUB_SHA `
-              --title "Frostguard $($env:VERSION) - Elroy fishing build" `
+              --title "Frostguard $($env:VERSION) - Elroy integrated build" `
               --notes-file $env:NOTES `
               --prerelease
