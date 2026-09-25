@@ -52,9 +52,18 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
         with:
           fetch-depth: 0
-          lfs: true
+          lfs: false
+
+      - name: Fetch Git LFS assets from upstream
+        shell: bash
+        run: |
+          git lfs install --local
+          git config --local lfs.url https://github.com/Shederator/wosbot.git/info/lfs
+          git lfs pull
 
       - name: Select required Windows channels
         id: channels
