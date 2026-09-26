@@ -17,7 +17,10 @@ public enum EmulatorType {
             "C:\\LDPlayer\\LDPlayer9"),
 
     MUMU_MAC("MuMuPlayer for Mac", ConfigurationKeyEnum.MUMU_MAC_PATH_STRING,
-            "mumutool", "", false);
+            "mumutool", "", false),
+
+    ANDROID_EMULATOR("Android Emulator", ConfigurationKeyEnum.ANDROID_EMULATOR_ADB_PATH_STRING,
+            "adb", "", false);
 
     private final String label;
     private final ConfigurationKeyEnum cfgKey;
@@ -49,9 +52,11 @@ public enum EmulatorType {
         String arch = architecture == null ? "" : architecture.toLowerCase(java.util.Locale.ROOT);
         boolean windows = os.contains("win");
         boolean mac = os.contains("mac");
+        boolean linux = os.contains("linux");
         return switch (this) {
             case MUMU, MEMU, LDPLAYER -> windows;
             case MUMU_MAC -> mac && (arch.contains("aarch64") || arch.contains("arm64"));
+            case ANDROID_EMULATOR -> linux;
         };
     }
 

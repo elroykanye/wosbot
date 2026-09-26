@@ -52,15 +52,14 @@ public abstract class EmulatorInstance {
 
     protected EmulatorInstance(String consolePath, String adbOverride) {
         this.consolePath = consolePath;
-        this.adbExecutable = AdbExecutableResolver.resolve(
-                System.getProperty("os.name", ""),
-                java.nio.file.Path.of(System.getProperty("user.dir")),
-                consolePath,
-                adbOverride == null || adbOverride.isBlank()
-                        ? System.getProperty("frostguard.adb.path",
-                                System.getenv().getOrDefault("FROSTGUARD_ADB_PATH", ""))
-                        : adbOverride,
-                System.getenv().getOrDefault("PATH", ""));
+        this.adbExecutable = adbOverride == null || adbOverride.isBlank()
+                ? AdbExecutableResolver.resolveCurrent(consolePath)
+                : AdbExecutableResolver.resolve(
+                        System.getProperty("os.name", ""),
+                        java.nio.file.Path.of(System.getProperty("user.dir")),
+                        consolePath,
+                        adbOverride,
+                        System.getenv().getOrDefault("PATH", ""));
         initBridge();
     }
 

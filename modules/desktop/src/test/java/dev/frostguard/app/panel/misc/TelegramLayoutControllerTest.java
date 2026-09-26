@@ -1,5 +1,7 @@
 package dev.frostguard.app.panel.misc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -38,5 +40,19 @@ class TelegramLayoutControllerTest {
 
         assertTrue(script.contains("start \"\" \""
                 + watcherLauncher.toAbsolutePath().normalize() + "\""));
+    }
+
+    @Test
+    void startupFolderIsUnavailableWithoutWindowsAppData() {
+        assertNull(TelegramLayoutController.startupFolder(null));
+        assertNull(TelegramLayoutController.startupFolder(" "));
+    }
+
+    @Test
+    void startupFolderUsesWindowsAppDataWhenAvailable() {
+        Path appData = tempDir.resolve("AppData/Roaming");
+
+        assertEquals(appData.resolve("Microsoft/Windows/Start Menu/Programs/Startup"),
+                TelegramLayoutController.startupFolder(appData.toString()));
     }
 }

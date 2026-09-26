@@ -19,8 +19,28 @@ final class AdbExecutableResolver {
         if (override.isBlank()) {
             override = System.getenv().getOrDefault(ADB_PATH_ENVIRONMENT, "").trim();
         }
+        if (override.isBlank()) {
+            override = detectAndroidSdkAdb();
+        }
         return resolve(System.getProperty("os.name", ""), Path.of(System.getProperty("user.dir")),
                 consolePath, override, System.getenv().getOrDefault("PATH", ""));
+    }
+
+    private static String detectAndroidSdkAdb() {
+        List<String> sdkRoots = List.of(
+                System.getenv().getOrDefault("ANDROID_SDK_ROOT", ""),
+                System.getenv().getOrDefault("ANDROID_HOME", ""),
+                Path.of(System.getProperty("user.home"), "Android", "Sdk").toString());
+        for (String root : sdkRoots) {
+            if (root == null || root.isBlank()) {
+                continue;
+            }
+            Path candidate = Path.of(root, "platform-tools", "adb");
+            if (Files.isRegularFile(candidate)) {
+                return candidate.toString();
+            }
+        }
+        return "";
     }
 
     static String resolve(String osName, Path workingDirectory, String consolePath,

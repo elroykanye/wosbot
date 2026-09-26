@@ -7,7 +7,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Properties;
 
@@ -105,10 +104,6 @@ public class TelegramLayoutController {
         refreshStatusLabel();
         refreshStartupLabel();
 
-        // Sync toggle state to current registration status
-        if (checkBoxAutoStart != null) {
-            checkBoxAutoStart.setSelected(Files.exists(startupFolder().resolve(SHORTCUT_NAME)));
-        }
     }
 
     @FXML
@@ -284,13 +279,19 @@ public class TelegramLayoutController {
     }
 
     private void registerStartup() {
+        Path startup = startupFolder();
+        if (startup == null) {
+            showError("Telegram watcher auto-start is currently available on Windows only.");
+            checkBoxAutoStart.setSelected(false);
+            return;
+        }
         File watcherLauncher = resolveWatcherLauncher();
         if (watcherLauncher == null) {
             showError("Cannot locate the Telegram Watcher launcher.");
             checkBoxAutoStart.setSelected(false);
             return;
         }
-        Path shortcut = startupFolder().resolve(SHORTCUT_NAME);
+        Path shortcut = startup.resolve(SHORTCUT_NAME);
         try {
             Path workspaceLauncher = writeWorkspaceWatcherLauncher(watcherLauncher);
             String vbs =
@@ -349,7 +350,12 @@ public class TelegramLayoutController {
     }
 
     private void removeStartup() {
-        Path shortcut = startupFolder().resolve(SHORTCUT_NAME);
+        Path startup = startupFolder();
+        if (startup == null) {
+            refreshStartupLabel();
+            return;
+        }
+        Path shortcut = startup.resolve(SHORTCUT_NAME);
         try {
             Files.deleteIfExists(shortcut);
             refreshStartupLabel();
@@ -360,7 +366,19 @@ public class TelegramLayoutController {
     }
 
     private void refreshStartupLabel() {
-        boolean registered = Files.exists(startupFolder().resolve(SHORTCUT_NAME));
+        Path startup = startupFolder();
+        if (startup == null) {
+            if (checkBoxAutoStart != null) {
+                checkBoxAutoStart.setSelected(false);
+                checkBoxAutoStart.setDisable(true);
+            }
+            if (labelStartupStatus != null) {
+                labelStartupStatus.setText("Auto-start: unavailable on this platform");
+                labelStartupStatus.setStyle("");
+            }
+            return;
+        }
+        boolean registered = Files.exists(startup.resolve(SHORTCUT_NAME));
         if (checkBoxAutoStart != null) checkBoxAutoStart.setSelected(registered);
         if (labelStartupStatus == null) return;
         if (registered) {
@@ -373,8 +391,14 @@ public class TelegramLayoutController {
     }
 
     private static Path startupFolder() {
-        return Paths.get(System.getenv("APPDATA"),
-                "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+        return startupFolder(System.getenv("APPDATA"));
+    }
+
+    static Path startupFolder(String appData) {
+        if (appData == null || appData.isBlank()) {
+            return null;
+        }
+        return Path.of(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
     }
 
     /**

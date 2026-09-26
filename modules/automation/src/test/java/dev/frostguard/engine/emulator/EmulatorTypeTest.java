@@ -19,5 +19,7 @@ class EmulatorTypeTest {
         assertFalse(EmulatorType.MUMU_MAC.supports("Mac OS X", "x86_64"));
         assertFalse(EmulatorType.MUMU.supports("Mac OS X", "aarch64"));
         assertFalse(EmulatorType.MUMU_MAC.supports("Mac OS X", "x86_64"));
+        assertTrue(EmulatorType.ANDROID_EMULATOR.supports("Linux", "amd64"));
+        assertFalse(EmulatorType.ANDROID_EMULATOR.supports("Windows 11", "amd64"));
     }
 }

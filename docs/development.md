@@ -20,6 +20,12 @@ winget install Microsoft.Git
 winget install EclipseAdoptium.Temurin.21.JDK
 ```
 
+On Ubuntu or Linux Mint, install the native OCR runtime used by Tess4J:
+
+```sh
+sudo apt install tesseract-ocr libtesseract-dev libleptonica-dev
+```
+
 ## Check out the source
 
 ```sh

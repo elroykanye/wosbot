@@ -84,6 +84,7 @@ public class EmulatorController {
             case MEMU     -> new MEmuEmulatorInstance(dir);
             case LDPLAYER -> new LDPlayerEmulatorInstance(dir);
             case MUMU_MAC -> new MuMuMacEmulatorInstance(dir);
+            case ANDROID_EMULATOR -> new AndroidSdkEmulatorInstance(dir);
         };
         LOG.info("Backend: {}", kind.getDisplayName());
 
