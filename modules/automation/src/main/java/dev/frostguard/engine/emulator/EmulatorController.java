@@ -11,6 +11,7 @@ import java.util.concurrent.locks.*;
 import dev.frostguard.vision.match.OpenCvPatternLocator;
 import dev.frostguard.api.configs.*;
 import dev.frostguard.engine.emulator.instance.*;
+import dev.frostguard.engine.error.StopExecutionException;
 import dev.frostguard.api.domain.*;
 import dev.frostguard.engine.input.TapInteractionService;
 import dev.frostguard.engine.schedule.QueuedEmulatorTask;
@@ -35,10 +36,9 @@ public class EmulatorController {
 
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition     cond = lock.newCondition();
-    // Serializes emulator boots across profile threads. Multiple InitializeRoutine/SkipTutorialRoutine
-    // threads can reach launchEmulator() at the same time; booting 3+ instances concurrently spikes
-    // host CPU/RAM/IO and causes random freezes. This lock guarantees one boot at a time, followed by
-    // a configurable settle delay before the next launch is permitted.
+    // Serializes complete startup flows across profiles. InitializeRoutine keeps this permit until
+    // Whiteout reaches a verified home/world screen, so a fixed delay cannot accidentally overlap
+    // several cold boots and Unity launches.
     private final ReentrantLock emulatorLaunchLock = new ReentrantLock();
     private final PriorityQueue<QueuedEmulatorTask> queue   = new PriorityQueue<>();
     private final Set<Thread>        slots        = new HashSet<>();
@@ -72,12 +72,19 @@ public class EmulatorController {
         String emuStr = cfg.get(ConfigurationKeyEnum.CURRENT_EMULATOR_STRING.name());
         if (emuStr == null || emuStr.isBlank()) throw new IllegalStateException("No emulator selected");
         EmulatorType kind = EmulatorType.valueOf(emuStr);
+        if (!kind.supportsCurrentPlatform()) {
+            throw new IllegalStateException(kind.getDisplayName() + " is not supported on this computer");
+        }
         String dir = cfg.get(kind.getConfigKey());
-        if (dir == null || dir.isBlank()) throw new IllegalStateException("No path for " + kind.getDisplayName());
+        if (kind.requiresExecutablePath() && (dir == null || dir.isBlank())) {
+            throw new IllegalStateException("No path for " + kind.getDisplayName());
+        }
         backend = switch (kind) {
             case MUMU     -> new MuMuEmulatorInstance(dir);
             case MEMU     -> new MEmuEmulatorInstance(dir);
             case LDPLAYER -> new LDPlayerEmulatorInstance(dir);
+            case MUMU_MAC -> new MuMuMacEmulatorInstance(dir);
+            case ANDROID_EMULATOR -> new AndroidSdkEmulatorInstance(dir);
         };
         LOG.info("Backend: {}", kind.getDisplayName());
 
@@ -131,25 +138,18 @@ public class EmulatorController {
 
     public boolean isGameInstalled(String i)              { requireBackend(); return backend.isAppInstalled(i, GAME.getPackageName()); }
 
-    /**
-     * Launches an emulator instance, serializing concurrent boots.
-     *
-     * <p>Only one emulator may boot at a time across all profile threads. After a successful
-     * launch request the caller holds the launch lock for an additional settle delay
-     * ({@link ConfigurationKeyEnum#EMULATOR_LAUNCH_DELAY_MS_INT}, default 30s) so the next
-     * emulator does not start until the current one has finished its most resource-intensive
-     * boot phase. This prevents the host freezes observed when launching 3+ instances at once,
-     * both at initial startup and when idle instances are recycled.
-     */
+    /** Launches an emulator, using the old delay only when no readiness permit surrounds it. */
     public void launchEmulator(String i) {
         requireBackend();
-        emulatorLaunchLock.lock();
+        boolean ownsReadinessPermit = emulatorLaunchLock.isHeldByCurrentThread();
+        if (!ownsReadinessPermit) {
+            emulatorLaunchLock.lock();
+        }
         try {
-            LOG.info("{} acquired emulator launch lock (dev {})", label(i), i);
             backend.launchEmulator(i);
 
-            long delayMs = readLaunchDelayMs();
-            if (delayMs > 0) {
+            long delayMs = ownsReadinessPermit ? 0 : readLaunchDelayMs();
+            if (delayMs > 0L) {
                 LOG.info("Waiting {} ms before allowing another emulator launch...", delayMs);
                 Thread.sleep(delayMs);
             }
@@ -158,8 +158,40 @@ public class EmulatorController {
             Thread.currentThread().interrupt();
             LOG.warn("Emulator launch wait interrupted for dev {}", i);
         } finally {
+            if (!ownsReadinessPermit) {
+                emulatorLaunchLock.unlock();
+            }
+        }
+    }
+
+    public StartupPermit acquireStartupPermit(String i) {
+        requireBackend();
+        try {
+            emulatorLaunchLock.lockInterruptibly();
+            LOG.info("{} acquired startup readiness permit (dev {})", label(i), i);
+            return new StartupPermit(i);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw StopExecutionException.userCancelled();
+        }
+    }
+
+    public final class StartupPermit implements AutoCloseable {
+        private final String device;
+        private boolean closed;
+
+        private StartupPermit(String device) {
+            this.device = device;
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
             emulatorLaunchLock.unlock();
-            LOG.info("{} released emulator launch lock (dev {})", label(i), i);
+            LOG.info("{} released startup readiness permit (dev {})", label(device), device);
         }
     }
 
@@ -169,8 +201,10 @@ public class EmulatorController {
     public void    sendGameToBackground(String i)         { requireBackend(); backend.sendGameToBackground(i); }
     public boolean isRunning(String i)                    { requireBackend(); return backend.isRunning(i); }
     public boolean isPackageRunning(String i, String pkg) { requireBackend(); return backend.isPackageRunning(i, pkg); }
+    public boolean waitForNotRespondingApp(String i)      { requireBackend(); return backend.waitForNotRespondingApp(i); }
     public void    restartAdbServer()                     { requireBackend(); backend.restartAdb(); }
     public boolean performAdbHealthCheck(String i)        { requireBackend(); return backend.performAdbHealthCheck(i); }
+    public boolean probeDevice(String i)                  { requireBackend(); return backend.probeDevice(i); }
     public void    invalidateAllCaches(String i)          { requireBackend(); backend.invalidateAllCaches(i); }
     public String  getAdbPath()                           { requireBackend(); return backend.getAdbPath(); }
     public String  getDeviceSerial(String i)              { requireBackend(); return backend.getPublicDeviceSerial(i); }
@@ -198,7 +232,6 @@ public class EmulatorController {
 
     public ImageSearchResultData locatePattern(String idx, RawImageData frame,
             TemplatesEnum t, PointData tl, PointData br, double th) {
-        requireBackend();
         try { OpenCvPatternLocator.setContextLabel(label(idx));
               return OpenCvPatternLocator.locatePattern(frame, regionTpl(t.getTemplate()), tl, br, th);
         } finally { OpenCvPatternLocator.clearContextLabel(); }
@@ -231,13 +264,19 @@ public class EmulatorController {
 
     public ImageSearchResultData locatePatternMono(String idx, TemplatesEnum t,
             PointData tl, PointData br, double th) {
-        requireBackend(); RawImageData frame = captureScreen(idx);
+        return locatePatternMono(idx, captureScreen(idx), t, tl, br, th);
+    }
+    public ImageSearchResultData locatePatternMono(String idx, RawImageData frame, TemplatesEnum t,
+            PointData tl, PointData br, double th) {
         try { OpenCvPatternLocator.setContextLabel(label(idx));
               return OpenCvPatternLocator.locatePatternMono(frame, regionTpl(t.getTemplate()), tl, br, th);
         } finally { OpenCvPatternLocator.clearContextLabel(); }
     }
     public ImageSearchResultData locatePatternMono(String idx, TemplatesEnum t, double th) {
         return locatePatternMono(idx, t, ORIGIN, FULL, th);
+    }
+    public ImageSearchResultData locatePatternMono(String idx, RawImageData frame, TemplatesEnum t, double th) {
+        return locatePatternMono(idx, frame, t, ORIGIN, FULL, th);
     }
 
     public List<ImageSearchResultData> locateAllPatternsMono(String idx, TemplatesEnum t,

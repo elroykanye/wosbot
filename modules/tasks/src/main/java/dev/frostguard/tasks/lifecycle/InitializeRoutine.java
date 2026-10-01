@@ -23,6 +23,7 @@ import dev.frostguard.vision.match.OpenCvPatternLocator;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.function.BooleanSupplier;
 
 /**
  * Initialize task that starts the bot and prepares the game for automation.
@@ -66,7 +67,7 @@ import java.time.LocalDateTime;
 public class InitializeRoutine extends DelayedTask {
 
 	// ========== Home Screen Detection Constants ==========
-	private static final int MAX_HOME_SCREEN_ATTEMPTS = 10;
+	private static final int MAX_HOME_SCREEN_ATTEMPTS = 24;
 	private static final int RESOURCE_DOWNLOAD_TIMEOUT_MINUTES = 10;
 	private static final int RESOURCE_DOWNLOAD_POLL_DELAY_MS = 5000;
 	private static final int MAX_RESOURCE_DOWNLOAD_ATTEMPTS =
@@ -93,6 +94,11 @@ public class InitializeRoutine extends DelayedTask {
 	private static final int UNKNOWN_BLOCKER_BACK_SETTLE_MS = 2000;
 	private static final int MAX_UNKNOWN_BLOCKER_POSTCONDITION_ATTEMPTS = 3;
 	private static final int STARTUP_PATTERN_THRESHOLD = 90;
+	private static final int MAX_GAME_LAUNCH_ATTEMPTS = 3;
+	private static final int GAME_LAUNCH_STABILITY_DELAY_MS = 30_000;
+	private static final int GAME_LAUNCH_RETRY_COOLDOWN_MINUTES = 5;
+	private static final int MAX_ANR_WAIT_ACTIONS = 3;
+	private static final int ANR_WAIT_SETTLE_MS = 15_000;
 
 	// ========== Instance State ==========
 	/**
@@ -103,6 +109,7 @@ public class InitializeRoutine extends DelayedTask {
 	private int unknownBlockerBackAttempts = 0;
 	private int welcomeBackDismissals = 0;
 	private int closeableOverlayDismissals = 0;
+	private int anrWaitActions = 0;
 	private String lastVerifiedStartupState = "initialization started";
 	private RawImageData lastStartupFrame;
 	private final DiagnosticSnapshotStore startupSnapshots = DiagnosticSnapshotStore.forCurrentWorkspace();
@@ -154,14 +161,17 @@ public class InitializeRoutine extends DelayedTask {
 		lastStartupFrame = null;
 		setRecurring(false);
 
-		ensureEmulatorRunning();
-		ensureGameInstalled();
-		ensureGameRunning();
-		
-		// Wait for home screen
-		if (!waitForHomeScreen()) {
-			// A blocking startup state already selected and logged its bounded outcome.
-			return;
+		try (EmulatorController.StartupPermit ignored =
+				emuManager.acquireStartupPermit(EMULATOR_NUMBER)) {
+			ensureEmulatorRunning();
+			ensureGameInstalled();
+			ensureGameRunning();
+
+			// Do not let another profile begin its cold boot or Unity launch until this
+			// profile reaches a proven automation-ready screen.
+			if (!waitForHomeScreen()) {
+				return;
+			}
 		}
 		
 		// Verify and switch character if needed (before reading stamina)
@@ -188,17 +198,36 @@ public class InitializeRoutine extends DelayedTask {
 	private void ensureEmulatorRunning() {
 		logInfo("Checking emulator status...");
 
-		while (!isStarted) {
-			if (emuManager.isRunning(EMULATOR_NUMBER)) {
-				isStarted = true;
-				lastVerifiedStartupState = "emulator running";
-				logInfo("Emulator is running.");
-			} else {
-				logInfo("Emulator not found. Attempting to start it...");
-				emuManager.launchEmulator(EMULATOR_NUMBER);
-				logInfo("Waiting 10 seconds before checking again.");
-				sleepTask(10000); // Wait for emulator to start
+		if (!isStarted) {
+			awaitEmulatorRunning(
+					() -> emuManager.isRunning(EMULATOR_NUMBER),
+					() -> {
+						logInfo("Emulator not found. Attempting to start it...");
+						emuManager.launchEmulator(EMULATOR_NUMBER);
+					},
+					() -> {
+						logInfo("Waiting 10 seconds before checking again.");
+						sleepTask(10000); // Wait for emulator to start
+					},
+					this::checkPreemption);
+			isStarted = true;
+			lastVerifiedStartupState = "emulator running";
+			logInfo("Emulator is running.");
+		}
+	}
+
+	static void awaitEmulatorRunning(BooleanSupplier isRunning, Runnable launch,
+			Runnable retryDelay, Runnable checkPreemption) {
+		while (true) {
+			checkPreemption.run();
+			boolean running = isRunning.getAsBoolean();
+			checkPreemption.run();
+			if (running) {
+				return;
 			}
+			launch.run();
+			checkPreemption.run();
+			retryDelay.run();
 		}
 	}
 
@@ -227,15 +256,33 @@ public class InitializeRoutine extends DelayedTask {
 	 * the game and waits for it to start.
 	 */
 	private void ensureGameRunning() {
-		if (!emuManager.isPackageRunning(EMULATOR_NUMBER, EmulatorController.GAME.getPackageName())) {
-			logInfo("Whiteout Survival is not running. Launching the game...");
-			emuManager.launchApp(EMULATOR_NUMBER, EmulatorController.GAME.getPackageName());
-			sleepTask(10000); // Wait for game to launch
-			lastVerifiedStartupState = "game launch requested and settle delay completed";
-		} else {
-			lastVerifiedStartupState = "game foreground package verified";
-			logInfo("Whiteout Survival is already running.");
+		String packageName = EmulatorController.GAME.getPackageName();
+		for (int attempt = 1; attempt <= MAX_GAME_LAUNCH_ATTEMPTS; attempt++) {
+			checkPreemption();
+			if (emuManager.isPackageRunning(EMULATOR_NUMBER, packageName)) {
+				lastVerifiedStartupState = "game foreground package verified";
+				logInfo(attempt == 1
+						? "Whiteout Survival is already running."
+						: "Whiteout Survival stayed running after launch attempt " + (attempt - 1) + ".");
+				return;
+			}
+
+			logInfo("Whiteout Survival is not running. Launch attempt " + attempt + "/"
+					+ MAX_GAME_LAUNCH_ATTEMPTS + "...");
+			emuManager.launchApp(EMULATOR_NUMBER, packageName);
+			sleepTask(GAME_LAUNCH_STABILITY_DELAY_MS);
+			checkPreemption();
+			if (emuManager.isPackageRunning(EMULATOR_NUMBER, packageName)) {
+				lastVerifiedStartupState = "game foreground package stable after launch";
+				logInfo("Whiteout Survival launch verified.");
+				return;
+			}
+			logWarning("Whiteout Survival exited during startup attempt " + attempt + ".");
 		}
+
+		throw new ProfileCooldownException(
+				"Whiteout Survival could not stay running after " + MAX_GAME_LAUNCH_ATTEMPTS + " attempts",
+				LocalDateTime.now().plusMinutes(GAME_LAUNCH_RETRY_COOLDOWN_MINUTES));
 	}
 
 	private RawImageData captureStartupFrame(String inspection) {
@@ -335,6 +382,16 @@ public class InitializeRoutine extends DelayedTask {
 			}
 
 			// Passive checks and later recoveries do not retain a screenshot.
+			if (anrWaitActions < MAX_ANR_WAIT_ACTIONS
+					&& emuManager.waitForNotRespondingApp(EMULATOR_NUMBER)) {
+				anrWaitActions++;
+				lastVerifiedStartupState = "Android app-not-responding Wait action selected";
+				logWarning("Android reported that Whiteout Survival was not responding. "
+						+ "Selected Wait (" + anrWaitActions + "/" + MAX_ANR_WAIT_ACTIONS
+						+ ") and allowing startup to continue.");
+				sleepTask(ANR_WAIT_SETTLE_MS);
+				continue;
+			}
 			logWarning("Home screen not found on an unsupported startup screen. "
 					+ "Waiting 5 seconds for a passive state change before retrying...");
 			sleepTask(5000);

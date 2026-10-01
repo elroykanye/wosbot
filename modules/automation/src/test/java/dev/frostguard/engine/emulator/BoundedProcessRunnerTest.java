@@ -27,7 +27,8 @@ class BoundedProcessRunnerTest {
         long startedAt = System.nanoTime();
 
         BoundedProcessRunner.ProcessResult result = BoundedProcessRunner.run(
-                childProcess("block"), Duration.ofMillis(200));
+                // Windows JVM startup can exceed 200ms before the child prints its PID.
+                childProcess("block"), Duration.ofSeconds(1));
 
         assertTrue(result.timedOut());
         assertTrue(Duration.ofNanos(System.nanoTime() - startedAt).compareTo(Duration.ofSeconds(3)) < 0);

@@ -85,7 +85,9 @@ The remaining setup applies once to whichever build option you chose above.
 
 ### Emulator setup
 
-Supported emulators are MuMu Player, LDPlayer, and MEmu. MuMu Player is recommended.
+Windows supports MuMu Player, LDPlayer, and MEmu. MuMu Player is recommended
+there. Linux supports Android SDK emulators through the **Android Emulator**
+backend; start and manage those devices with an external emulator manager.
 
 Use these emulator display settings:
 
@@ -96,6 +98,11 @@ Use these emulator display settings:
 - Frame rate: 30 FPS optional
 
 Start the emulator once and confirm Android boots normally.
+
+On Linux, Frostguard discovers `adb` from `ANDROID_SDK_ROOT`, `ANDROID_HOME`,
+`~/Android/Sdk/platform-tools`, or `PATH`. Profile emulator slot `0` maps to
+`emulator-5554`, slot `1` to `emulator-5556`, and so on. An explicit serial or
+ADB endpoint can also be used as the profile emulator identifier.
 
 ### Game setup
 

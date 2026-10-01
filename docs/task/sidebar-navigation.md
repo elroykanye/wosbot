@@ -23,7 +23,7 @@ screen, the trigger is retried once; the second attempt is terminal. Section cha
 same bounded polling but never repeat the tab tap from an unknown state. Scrolls and close taps
 likewise require the expected panel state. The retry decision uses one captured frame for both
 the selected-section check and the Home or World anchor check. If that frame already shows the
-panel, no second trigger is sent.
+panel, no second trigger is sent. An interrupted poll cannot authorize another trigger.
 
 Queue inspection opens or reuses its verified City or Wilderness section without changing the
 scroll position. This avoids unconditional reset gestures and allows one logical operation to

@@ -32,6 +32,7 @@ public abstract class EmulatorInstance {
 
     protected String consolePath;
     protected AndroidDebugBridge bridge;
+    private final String adbExecutable;
 
     private final ConcurrentHashMap<String, IDevice>      devCache  = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long>         devExpiry = new ConcurrentHashMap<>();
@@ -46,7 +47,19 @@ public abstract class EmulatorInstance {
     public    abstract boolean isRunning(String idx);
 
     protected EmulatorInstance(String consolePath) {
+        this(consolePath, "");
+    }
+
+    protected EmulatorInstance(String consolePath, String adbOverride) {
         this.consolePath = consolePath;
+        this.adbExecutable = adbOverride == null || adbOverride.isBlank()
+                ? AdbExecutableResolver.resolveCurrent(consolePath)
+                : AdbExecutableResolver.resolve(
+                        System.getProperty("os.name", ""),
+                        java.nio.file.Path.of(System.getProperty("user.dir")),
+                        consolePath,
+                        adbOverride,
+                        System.getenv().getOrDefault("PATH", ""));
         initBridge();
     }
 
@@ -74,18 +87,24 @@ public abstract class EmulatorInstance {
     }
 
     private String adbPath() {
-        String wd = System.getProperty("user.dir");
-        for (String sub : new String[]{"tools", "packaging/desktop/target/input/lib"}) {
-            File f = new File(wd, sub + File.separator + "adb" + File.separator + "adb.exe");
-            if (f.exists()) return f.getAbsolutePath();
+        return adbExecutable;
+    }
+
+    private ProcessBuilder adbProcess(String... arguments) {
+        List<String> command = new ArrayList<>(arguments.length + 1);
+        command.add(adbPath());
+        command.addAll(Arrays.asList(arguments));
+        ProcessBuilder builder = new ProcessBuilder(command);
+        File parent = new File(adbPath()).getAbsoluteFile().getParentFile();
+        if (new File(adbPath()).isAbsolute() && parent != null) {
+            builder.directory(parent);
         }
-        return consolePath + File.separator + "adb.exe";
+        return builder;
     }
 
     private void killAdb() {
         try {
-            Process p = new ProcessBuilder(adbPath(), "kill-server")
-                    .directory(new File(adbPath()).getParentFile()).start();
+            Process p = adbProcess("kill-server").start();
             if (!p.waitFor(10, TimeUnit.SECONDS)) p.destroyForcibly();
         } catch (Exception e) { LOG.error("kill-server failed: {}", e.getMessage()); }
     }
@@ -129,8 +148,7 @@ public abstract class EmulatorInstance {
         try {
             String ep = serial.startsWith("emulator-") ? "127.0.0.1:" + serial.substring(9) : serial;
             BoundedProcessRunner.ProcessResult result = BoundedProcessRunner.run(
-                    new ProcessBuilder(adbPath(), "connect", ep)
-                            .directory(new File(adbPath()).getParentFile()),
+                    adbProcess("connect", ep),
                     ADB_CONNECT_TIMEOUT);
             if (result.timedOut()) {
                 LOG.error("adb connect to {} did not respond within {} seconds; killed the subprocess",
@@ -218,19 +236,20 @@ public abstract class EmulatorInstance {
 
     public boolean performAdbHealthCheck(String idx) {
         LOG.info("ADB health check for dev {}", idx);
-        if (probe(idx)) return true;
+        if (probeDevice(idx)) return true;
 
         LOG.warn("Failed — restarting bridge");
         try { restartAdb(); Thread.sleep(3000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
-        if (probe(idx)) return true;
+        if (probeDevice(idx)) return true;
 
         LOG.warn("Still failing — kill-server + restart");
         try { killAdb(); Thread.sleep(2000); restartAdb(); Thread.sleep(3000); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
-        return probe(idx);
+        return probeDevice(idx);
     }
 
-    private boolean probe(String idx) {
+    /** Probes one serial without restarting the process-global ADB server. */
+    public boolean probeDevice(String idx) {
         try {
             invalidateDeviceCache(idx);
             IDevice d = findDevice(idx);
@@ -273,7 +292,10 @@ public abstract class EmulatorInstance {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            throw new RuntimeException(captureFailureMessage(idx, serial, buf.size(), e), e);
+            throw ADBConnectionException.forDevice(
+                    serial,
+                    captureFailureMessage(idx, serial, buf.size(), e),
+                    e);
         }
     }
 
@@ -427,6 +449,36 @@ public abstract class EmulatorInstance {
             }
             return Boolean.TRUE;
         }, "force-stop");
+    }
+
+    /**
+     * Selects Android's system-owned Wait action when an app-not-responding dialog is present.
+     * The target comes from the stable {@code android:id/aerr_wait} resource and its live bounds,
+     * never from a resolution-specific coordinate.
+     */
+    public boolean waitForNotRespondingApp(String idx) {
+        return withRetries(idx, dev -> {
+            try {
+                CollectingOutputReceiver hierarchy = new CollectingOutputReceiver();
+                dev.executeShellCommand(
+                        "uiautomator dump /data/local/tmp/frostguard-window.xml >/dev/null "
+                                + "&& cat /data/local/tmp/frostguard-window.xml",
+                        hierarchy, 10, TimeUnit.SECONDS);
+                Optional<PointData> wait = AndroidSystemDialogParser.buttonCenter(
+                        hierarchy.getOutput(), "aerr_wait");
+                if (wait.isEmpty()) {
+                    return false;
+                }
+                PointData target = wait.get();
+                dev.executeShellCommand(
+                        "input tap " + target.getX() + " " + target.getY(),
+                        new NullOutputReceiver(), 5, TimeUnit.SECONDS);
+                LOG.warn("Selected Android's Wait action for a non-responsive app on {}", idx);
+                return true;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }, "anr-wait");
     }
 
     public void sendGameToBackground(String idx) {

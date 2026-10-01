@@ -1,6 +1,8 @@
 package dev.frostguard.engine.service;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -40,6 +42,7 @@ import dev.frostguard.engine.emulator.EmulatorController;
 import dev.frostguard.engine.listener.BotStateListener;
 import dev.frostguard.engine.listener.QueueStateListener;
 import dev.frostguard.engine.schedule.BearTrapParticipationSchedule;
+import dev.frostguard.engine.schedule.BearRecoveryFinalization;
 import dev.frostguard.engine.schedule.DelayedTask;
 import dev.frostguard.engine.schedule.DelayedTaskRegistry;
 import dev.frostguard.engine.schedule.StaminaDeferral;
@@ -313,6 +316,17 @@ public class ScheduleService {
 			return;
 		}
 		if (!Boolean.TRUE.equals(account.getConfig(ConfigurationKeyEnum.BEAR_TRAP_EVENT_BOOL, Boolean.class))) {
+			Optional<Instant> finalizer = BearRecoveryFinalization.deadline(account);
+			if (finalizer.isPresent()) {
+				TaskQueue queue = dispatcher.getQueue(accountId);
+				if (queue != null) {
+					queue.scheduleOrRescheduleQueuedTask(
+							TpDailyTaskEnum.BEAR_TRAP,
+							account,
+							LocalDateTime.ofInstant(finalizer.orElseThrow(), ZoneId.systemDefault()));
+				}
+				return;
+			}
 			if (dispatcher.getQueue(accountId) != null) {
 				evictTask(accountId, TpDailyTaskEnum.BEAR_TRAP);
 			}
@@ -478,6 +492,17 @@ public class ScheduleService {
 			}
 		});
 
+		if (!queue.isTaskQueued(TpDailyTaskEnum.BEAR_TRAP)) {
+			BearRecoveryFinalization.deadline(account).ifPresent(deadline -> {
+				DelayedTask finalizer = DelayedTaskRegistry.create(TpDailyTaskEnum.BEAR_TRAP, account);
+				finalizer.reschedule(LocalDateTime.ofInstant(deadline, ZoneId.systemDefault()));
+				queue.enqueue(finalizer);
+				log(TpMessageSeverityEnum.INFO, finalizer.getTaskName(), account.getName(),
+						"Durable Bear recovery finalizer restored for "
+								+ formatTime(finalizer.getScheduled()));
+			});
+		}
+
 		addCustomTasks(account, queue, progress);
 	}
 
@@ -505,6 +530,25 @@ public class ScheduleService {
 		TaskStateData state = baseScheduledState(account.getId(), task.getTpTask().getId(), null);
 		DailyTaskStatusData saved = progressByType.get(task.getTpDailyTaskId());
 		boolean isBearTrap = task.getTpTask() == TpDailyTaskEnum.BEAR_TRAP;
+		Optional<Instant> recoveryFinalizer = isBearTrap
+				? BearRecoveryFinalization.deadline(account)
+				: Optional.empty();
+		if (recoveryFinalizer.isPresent()) {
+			LocalDateTime deadline = LocalDateTime.ofInstant(
+					recoveryFinalizer.orElseThrow(), ZoneId.systemDefault());
+			task.reschedule(deadline);
+			if (saved != null) {
+				task.setLastExecutionTime(saved.getLastExecution());
+				state.setLastExecutionTime(saved.getLastExecution());
+			}
+			state.setNextExecutionTime(deadline);
+			persistNextSchedule(account, TpDailyTaskEnum.BEAR_TRAP, deadline, null);
+			TaskManagementService.shared().recordTaskState(account.getId(), state);
+			queue.enqueue(task);
+			log(TpMessageSeverityEnum.INFO, task.getTaskName(), account.getName(),
+					"Durable Bear recovery finalizer restored for " + formatTime(deadline));
+			return;
+		}
 		Optional<BearTrapParticipationSchedule.Plan> bearPlan = isBearTrap
 				? BearTrapParticipationSchedule.resolve(account)
 				: Optional.empty();

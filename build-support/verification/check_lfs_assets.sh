@@ -41,7 +41,7 @@ for asset in "${required[@]}"; do
     continue
   fi
   # Every real asset here is far larger than any stub could be.
-  size="$(stat -c%s "${asset}")"
+  size="$(wc -c < "${asset}" | tr -d '[:space:]')"
   if [[ "${size}" -lt 10240 ]]; then
     echo "::error file=${asset}::Required binary is implausibly small (${size} bytes)."
     failed=1

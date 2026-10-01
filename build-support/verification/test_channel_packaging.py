@@ -19,6 +19,21 @@ def properties(element: ET.Element) -> dict[str, str]:
 
 
 class ChannelPackagingTest(unittest.TestCase):
+    def test_macos_beta_builds_native_apple_silicon_app(self):
+        workflow = (REPO_ROOT / ".github/workflows/macos-test-build.yml").read_text(
+            encoding="utf-8")
+        pom = (REPO_ROOT / "packaging/desktop/pom.xml").read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("macos-15", workflow)
+        self.assertIn("arm64", workflow)
+        self.assertNotIn("macos-15-intel", workflow)
+        self.assertIn("brew install android-platform-tools tesseract", workflow)
+        self.assertIn("verify_macos_app_image.py", workflow)
+        self.assertIn("-Pmacos-app-image,windows-nightly", workflow)
+        self.assertIn("<id>macos-app-image</id>", pom)
+        self.assertIn("<frostguard.adb.runtime.dir>", pom)
+
     def test_pr_ci_and_native_release_are_separate_workflows(self):
         workflows = REPO_ROOT / ".github/workflows"
         ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -240,6 +255,7 @@ class ChannelPackagingTest(unittest.TestCase):
         self.assertIn("-ine $file.Sha256", helper)
         self.assertIn("stable_candidate_version", installers)
         self.assertIn("stable_candidate_windows_version", installers)
+        self.assertIn("publish_elroy_release", installers)
         self.assertIn("--candidate-windows-version", installers)
         stable_build = installers.index("Build Stable application image")
         donor_build = installers.index("Build accepted Nightly bootstrap donor for Stable")
@@ -256,6 +272,9 @@ class ChannelPackagingTest(unittest.TestCase):
             [stable_build, donor_build, stable_verify, stable_installer,
              stable_upload, nightly_build, nightly_installer])
         self.assertNotIn("Reset packaging output before Nightly build", installers)
+        self.assertIn('"-Pwindows-app-image,windows-nightly" clean package', installers)
+        self.assertIn("Publish verified Elroy Nightly ZIP", installers)
+        self.assertIn("gh release create $env:TAG $env:ZIP", installers)
         self.assertIn('gh api --method DELETE `', workflow)
         self.assertIn('releases/$($release.id)', workflow)
         immutable_tag_create = workflow.index(
