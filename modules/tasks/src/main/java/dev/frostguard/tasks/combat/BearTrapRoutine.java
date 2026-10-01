@@ -20,13 +20,19 @@ import dev.frostguard.engine.helper.BearTrapHelper;
 import dev.frostguard.engine.helper.DeploymentPostTapRead;
 import dev.frostguard.engine.helper.DeploymentHelper;
 import dev.frostguard.engine.helper.DeploymentPreflightRead;
+import dev.frostguard.engine.helper.FormationSelectionVerifier;
 import dev.frostguard.engine.helper.MarchHelper;
 import dev.frostguard.engine.helper.TemplateSearchHelper;
 import dev.frostguard.engine.helper.TemplateSearchHelper.SearchConfig;
 import dev.frostguard.engine.schedule.DelayedTask;
+import dev.frostguard.engine.schedule.BearSessionCheckpoint;
 import dev.frostguard.engine.schedule.BearTrapParticipationSchedule;
 import dev.frostguard.engine.schedule.LaunchPoint;
 import dev.frostguard.engine.schedule.TaskQueue;
+import dev.frostguard.engine.nav.CommonGameAreas;
+import dev.frostguard.engine.nav.RallyFlagCoordinates;
+import dev.frostguard.engine.nav.SidebarFrameClassifier;
+import dev.frostguard.engine.nav.SidebarSection;
 import dev.frostguard.engine.service.ConfigService;
 import dev.frostguard.engine.service.ProfileService;
 import dev.frostguard.vision.convert.ImageConverter;
@@ -148,11 +154,7 @@ private int trapPreparationTime;
 
 private LocalDateTime referenceTrapTime;
 
-private boolean isVisuallyTriggered = false;
-
 private BearSessionCoordinator.ExitReason activeSessionExit;
-
-private Instant bearArrivalProofExpiresAt;
 
 public BearTrapRoutine(AccountDescriptor profile, TpDailyTaskEnum tpTask) {
         super(profile, tpTask);
@@ -176,51 +178,28 @@ public BearTrapRoutine(AccountDescriptor profile, TpDailyTaskEnum tpTask) {
 
 
         TrapTimingShape timing = null;
+        LiveBearSessionDriver sessionDriver = null;
         BearSessionExecutionException sessionFailure = null;
         try {
-            if (isVisuallyTriggered) {
-                LocalDateTime now = LocalDateTime.now(ZoneId.of("UTC"));
-                TrapTimingShape configuredTiming = computeTrapTiming();
-                if (!now.isBefore(configuredTiming.activationTime) && now.isBefore(configuredTiming.endTime)) {
-                    timing = configuredTiming;
-                    logInfo(routineLogBearTrapLine(
-                            "Task was visually triggered; using the configured event end instead of granting a new 30-minute window."));
-                } else {
-                    logError(routineLogBearTrapLine(
-                            "Visual Bear marker does not align with the configured active window. "
-                                    + "Refusing to invent an event deadline; verify the selected Bear timer."));
-                    deferToNextWindow();
-                    return;
-                }
-            } else {
-                timing = computeTrapTiming();
-                logTrapTimingFlow(timing);
-            }
+            timing = computeTrapTiming();
+            logTrapTimingFlow(timing);
 
             LocalDateTime now = LocalDateTime.now(ZoneId.of("UTC"));
+            sessionDriver = new LiveBearSessionDriver(
+                    timing.endTime.atZone(ZoneId.of("UTC")).toInstant());
 
             if (now.isBefore(timing.activationTime)) {
-                performPreparationPhase(timing.activationTime);
+                sessionDriver.prepareUntil(
+                        timing.activationTime.atZone(ZoneId.of("UTC")).toInstant());
             } else {
                 logInfo(routineLogBearTrapLine("Trap is already ACTIVE (preparation time passed)"));
-
-
-                logInfo(routineLogBearTrapLine("Executing essential setup (pets and navigation)..."));
-                if (usePets) {
-                    logInfo(routineLogBearTrapLine("Activating pets..."));
-                    enablePetsFlow();
-                }
-                navigationHelper.ensureCorrectScreenLocation(LaunchPoint.WORLD);
-                bearArrivalProofExpiresAt = null;
-                logInfo(routineLogBearTrapLine(
-                        "Active Bear navigation will use the verified World Bear icon fast path"));
-
+                sessionDriver.beginActivePhase();
             }
 
             now = LocalDateTime.now(ZoneId.of("UTC"));
 
             if (now.isBefore(timing.endTime)) {
-                activeSessionExit = performTrapActivePhase(timing.endTime);
+                activeSessionExit = performTrapActivePhase(timing.endTime, sessionDriver);
             } else {
                 logInfo(routineLogBearTrapLine("Trap already ended for this window"));
                 activeSessionExit = BearSessionCoordinator.ExitReason.EVENT_ENDED;
@@ -266,7 +245,11 @@ public BearTrapRoutine(AccountDescriptor profile, TpDailyTaskEnum tpTask) {
             }
         } finally {
             boolean resumeNormalTasks = BearSessionCoordinator.shouldResumeNormalTasks(activeSessionExit);
-            cleanupFlow(resumeNormalTasks);
+            if (sessionDriver != null) {
+                sessionDriver.cleanup(activeSessionExit, resumeNormalTasks);
+            } else {
+                cleanupFlow(resumeNormalTasks);
+            }
             if (resumeNormalTasks) {
                 deferToNextWindow();
             } else if (timing != null
@@ -323,22 +306,6 @@ private static class TrapTimingShape {
         }
     }
 
-private static class MarchStatusShape {
-        final boolean hasRecallButton;
-        final boolean hasViewButton;
-        final boolean hasSpeedupButton;
-
-        MarchStatusShape(boolean hasRecallButton, boolean hasViewButton, boolean hasSpeedupButton) {
-            this.hasRecallButton = hasRecallButton;
-            this.hasViewButton = hasViewButton;
-            this.hasSpeedupButton = hasSpeedupButton;
-        }
-
-        boolean noMarchesFound() {
-            return !hasRecallButton && !hasViewButton && !hasSpeedupButton;
-        }
-    }
-
 private void refreshNextWindowDateTime() {
         BearTrapHelper.WindowResult result = resolveWindowState();
 
@@ -372,8 +339,6 @@ private void requeueDisabledTasksFlow() {
         requeueGatherTaskFlow(queue);
         requeueAutojoinTaskFlow(queue);
 
-        sleepTask(1000);
-
     }
 
 private void requeueAutojoinTaskFlow(TaskQueue queue) {
@@ -389,77 +354,16 @@ private void requeueAutojoinTaskFlow(TaskQueue queue) {
         }
     }
 
-private void performPreparationPhase(LocalDateTime activationTime) {
-        LocalDateTime now = LocalDateTime.now(ZoneId.of("UTC"));
-        long secondsUntilActivation = ChronoUnit.SECONDS.between(now, activationTime);
-
-        logInfo(routineLogBearTrapLine("PREPARATION PHASE: " + secondsUntilActivation + " seconds until trap auto-activates"));
-
-        prepareForTrapFlow();
-
-        now = LocalDateTime.now(ZoneId.of("UTC"));
-        secondsUntilActivation = ChronoUnit.SECONDS.between(now, activationTime);
-
-        if (secondsUntilActivation > 0) {
-            logInfo(routineLogBearTrapLine("Waiting for trap auto-activation in " + secondsUntilActivation + " seconds..."));
-            sleepTask(secondsUntilActivation * 1000);
-
-        }
-
-        logInfo(routineLogBearTrapLine("Trap has been ACTIVATED automatically!"));
-    }
-
 private String routineLogBearTrapLine(String note) {
         return "BearTrapRoutine | " + note;
     }
 
-private void recallGatherTroopsFlow() {
-        // pernerch/2026-07-02: record recall timestamp in profile config BEFORE recalling.
-        // GatherRoutine reads GATHER_LAST_RECALL_TIME_STRING on startup and uses it to wait
-        // for troops to return home before re-deploying (checkTroopReturnPending).
-        writeProfileSetting(
-            dev.frostguard.api.configs.ConfigurationKeyEnum.GATHER_LAST_RECALL_TIME_STRING,
-            java.time.LocalDateTime.now().toString());
-        logInfo(routineLogBearTrapLine("Gather recall timestamp stored for troop-return tracking."));
-
-        int attempt = 0;
-
-        while (attempt < MAX_GATHER_RECALL_ATTEMPTS_LIMIT) {
-            attempt++;
-
-            MarchStatusShape status = inspectMarchStatus();
-
-            logDebug(routineLogBearTrapLine(String.format(
-                    "recallGatherTroopsFlow status => returning:%b view:%b speedup:%b (attempt %d)",
-                    status.hasRecallButton, status.hasViewButton, status.hasSpeedupButton, attempt)));
-
-            if (status.noMarchesFound()) {
-                logInfo(routineLogBearTrapLine("Zero march indicators detected. All gather troops are recalled or none present."));
-                return;
-            }
-
-            if (status.hasRecallButton) {
-                recallMarchFlow();
-            }
-
-            if (status.hasViewButton || status.hasSpeedupButton) {
-                logInfo(routineLogBearTrapLine("Troops are still marching - waiting for them to return"));
-                sleepTask(1000);
-
-            }
-
-            sleepTask(200);
-
-        }
-
-        logError(routineLogBearTrapLine("recallGatherTroopsFlow exceeded max attempts (" + MAX_GATHER_RECALL_ATTEMPTS_LIMIT +
-                "), exiting to avoid deadlock"));
-    }
-
-private BearSessionCoordinator.ExitReason performTrapActivePhase(LocalDateTime trapEndTime) {
+private BearSessionCoordinator.ExitReason performTrapActivePhase(
+        LocalDateTime trapEndTime,
+        LiveBearSessionDriver driver) {
         logInfo(routineLogBearTrapLine("=== TRAP IS NOW ACTIVE - Starting strategy execution ==="));
         BearSessionCoordinator coordinator = new BearSessionCoordinator(
-                new LiveBearSessionDriver(trapEndTime.atZone(ZoneId.of("UTC")).toInstant()),
+                driver,
                 trapEndTime.atZone(ZoneId.of("UTC")).toInstant(),
                 callOwnRally,
                 ownRallyFlag,
@@ -471,46 +375,15 @@ private BearSessionCoordinator.ExitReason performTrapActivePhase(LocalDateTime t
     }
 
 private boolean confirmExecutionWindow() {
-
-
-        isVisuallyTriggered = false;
-
-
-        try {
-            ImageSearchResultData result = emuManager.locatePattern(
-                    profile.getEmulatorNumber(),
-                    TemplatesEnum.BEAR_HUNT_IS_RUNNING,
-                    90);
-            if (result.isFound()) {
-                logInfo(routineLogBearTrapLine("Confirmed: Bear Hunt is VISUALLY ACTIVE. Overriding time window check."));
-                isVisuallyTriggered = true;
-                return true;
-            }
-        } catch (Exception e) {
-            logWarning(routineLogBearTrapLine("Visual check did not complete in confirmExecutionWindow: " + e.getMessage()));
-        }
-
         if (!hasInsideWindow()) {
-            logWarning(routineLogBearTrapLine("Execute called OUTSIDE valid window. Planning next run..."));
+            logWarning(routineLogBearTrapLine(
+                    "Execution was requested outside the configured Bear window; "
+                            + "manual Run Now does not invent or extend an event lease."));
             return false;
         }
 
         logInfo(routineLogBearTrapLine("Confirmed: We are INSIDE a valid execution window"));
         return true;
-    }
-
-private boolean touchBearTrapGoButton(int trapNumber) {
-        switch (trapNumber) {
-            case 1:
-                tapInside(BEAR_TRAP_1_GO_BUTTON_TL_VALUE, BEAR_TRAP_1_GO_BUTTON_BR_VALUE);
-                return true;
-            case 2:
-                tapInside(BEAR_TRAP_2_GO_BUTTON_TL_VALUE, BEAR_TRAP_2_GO_BUTTON_BR_VALUE);
-                return true;
-            default:
-                logError(routineLogBearTrapLine("Invalid trap number: " + trapNumber));
-                return false;
-        }
     }
 
 private LocalDateTime resolveConfigDateTime(ConfigurationKeyEnum key) {
@@ -576,90 +449,9 @@ private ConfigurationKeyEnum selectedTrapScheduleKey() {
         return BearTrapParticipationSchedule.scheduleKey(trapNumber);
     }
 
-private void disableAutojoinFlow() {
-        tapInside(ALLIANCE_BUTTON_TL_VALUE, ALLIANCE_BUTTON_BR_VALUE);
-        sleepTask(3000);
-
-
-        ImageSearchResultData warButton = templateSearchHelper.locatePattern(
-                ALLIANCE_WAR_BUTTON,
-                SearchConfig.builder()
-                        .withThreshold(90)
-                        .withMaxAttempts(TEMPLATE_SEARCH_RETRIES_EXTENDED_VALUE)
-                        .build());
-
-        if (!warButton.isFound()) {
-            logError(routineLogBearTrapLine("Alliance War button not detected to disable autojoin"));
-            return;
-        }
-
-        tapInside(warButton.getPoint(), warButton.getPoint(), 1, 1000);
-        sleepTask(1000);
-
-
-        tapInside(AUTOJOIN_BUTTON_TL_VALUE, AUTOJOIN_BUTTON_BR_VALUE, 1, 1500);
-        sleepTask(500);
-
-
-        tapInside(AUTOJOIN_STOP_BUTTON_TL_VALUE, AUTOJOIN_STOP_BUTTON_BR_VALUE, 1, 500);
-        sleepTask(500);
-
-
-        navigationHelper.ensureCorrectScreenLocation(LaunchPoint.ANY);
-    }
-
 private BearTrapHelper.WindowResult resolveWindowState() {
         Instant referenceUTC = referenceTrapTime.atZone(ZoneId.of("UTC")).toInstant();
         return BearTrapHelper.calculateWindow(referenceUTC, trapPreparationTime);
-    }
-
-private void prepareForTrapFlow() {
-        logInfo(routineLogBearTrapLine("Preparing for Bear Trap event..."));
-
-        logInfo(routineLogBearTrapLine("Disabling autojoin..."));
-        disableAutojoinFlow();
-
-        if (recallTroops) {
-            logInfo(routineLogBearTrapLine("Recalling all gather troops to the city..."));
-            recallGatherTroopsFlow();
-        }
-
-        if (usePets) {
-            logInfo(routineLogBearTrapLine("Activating pets..."));
-            enablePetsFlow();
-        }
-
-        logInfo(routineLogBearTrapLine("Moving camera to Bear Trap " + trapNumber));
-        reachBearTrap(trapNumber);
-
-    }
-
-private MarchStatusShape inspectMarchStatus() {
-        ImageSearchResultData returningArrow = templateSearchHelper.locatePattern(
-                MARCHES_AREA_RECALL_BUTTON,
-                SearchConfig.builder()
-                        .withThreshold(90)
-                        .withMaxAttempts(TEMPLATE_SEARCH_RETRIES_VALUE)
-                        .build());
-
-        ImageSearchResultData marchView = templateSearchHelper.locatePattern(
-                MARCHES_AREA_VIEW_BUTTON,
-                SearchConfig.builder()
-                        .withThreshold(90)
-                        .withMaxAttempts(TEMPLATE_SEARCH_RETRIES_VALUE)
-                        .build());
-
-        ImageSearchResultData marchSpeedup = templateSearchHelper.locatePattern(
-                MARCHES_AREA_SPEEDUP_BUTTON,
-                SearchConfig.builder()
-                        .withThreshold(90)
-                        .withMaxAttempts(TEMPLATE_SEARCH_RETRIES_VALUE)
-                        .build());
-
-        return new MarchStatusShape(
-                returningArrow != null && returningArrow.isFound(),
-                marchView != null && marchView.isFound(),
-                marchSpeedup != null && marchSpeedup.isFound());
     }
 
 private void logTrapTimingFlow(TrapTimingShape timing) {
@@ -718,27 +510,6 @@ private boolean isSharedEmulatorProfile() {
                 .anyMatch(other -> Boolean.TRUE.equals(other.getEnabled()));
     }
 
-private void recallMarchFlow() {
-        logInfo(routineLogBearTrapLine("Returning arrow detected - attempting to tap recall button"));
-
-        ImageSearchResultData recallButton = templateSearchHelper.locatePattern(
-                MARCHES_AREA_RECALL_BUTTON,
-                SearchConfig.builder()
-                        .withThreshold(90)
-                        .withMaxAttempts(TEMPLATE_SEARCH_RETRIES_VALUE)
-                        .build());
-
-        if (recallButton.isFound()) {
-            tapInside(recallButton.getPoint(), recallButton.getPoint(), 1, 300);
-            sleepTask(300);
-
-
-            tapInside(RECALL_CONFIRM_BUTTON_TL_VALUE, RECALL_CONFIRM_BUTTON_BR_VALUE, 1, 200);
-            sleepTask(500);
-
-        }
-    }
-
 private boolean hasInsideWindow() {
         Instant referenceUTC = referenceTrapTime.atZone(ZoneId.of("UTC")).toInstant();
         BearTrapHelper.WindowResult result = BearTrapHelper.calculateWindow(referenceUTC, trapPreparationTime);
@@ -776,164 +547,6 @@ static List<Integer> decodeJoinFlags(String flagConfig) {
         return new ArrayList<>(flags);
     }
 
-private void enablePetsFlow() {
-        ImageSearchResultData petsButton = templateSearchHelper.locatePattern(
-                GAME_HOME_PETS,
-                SearchConfig.builder()
-                        .withThreshold(90)
-                        .withMaxAttempts(TEMPLATE_SEARCH_RETRIES_EXTENDED_VALUE)
-                        .build());
-
-        if (!petsButton.isFound()) {
-            logError(routineLogBearTrapLine("Pets button not detected to enable pets"));
-            return;
-        }
-
-        tapInside(petsButton.getPoint(), petsButton.getPoint(), 1, 500);
-        sleepTask(1000);
-
-
-        tapInside(PET_RAZORBACK_TL_VALUE, PET_RAZORBACK_BR_VALUE, 1, 500);
-        sleepTask(300);
-
-
-        tapInside(PET_QUICK_USE_BUTTON_TL_VALUE, PET_QUICK_USE_BUTTON_BR_VALUE, 1, 500);
-        sleepTask(300);
-
-
-        tapInside(PET_USE_BUTTON_TL_VALUE, PET_USE_BUTTON_BR_VALUE, 1, 100);
-        sleepTask(500);
-
-
-        pressBack();
-        sleepTask(300);
-
-
-        navigationHelper.ensureCorrectScreenLocation(LaunchPoint.ANY);
-    }
-
-private boolean reachBearTrap(int trapNumber) {
-        boolean territoryReady = false;
-        for (int routeAttempt = 1; routeAttempt <= TERRITORY_TRANSITION_ATTEMPTS; routeAttempt++) {
-            ImageSearchResultData world = findFreshTransition(GAME_HOME_WORLD, 90, 350);
-            if (!world.isFound()) {
-                navigationHelper.ensureCorrectScreenLocation(LaunchPoint.WORLD);
-                world = findFreshTransition(GAME_HOME_WORLD, 90, FRESH_TRANSITION_TIMEOUT_MS);
-            }
-            if (!world.isFound()) {
-                continue;
-            }
-
-            tapInside(ALLIANCE_BUTTON_TL_VALUE, ALLIANCE_BUTTON_BR_VALUE);
-            if (openTerritoryFromAllianceMenu()) {
-                territoryReady = true;
-                break;
-            }
-            logWarning(routineLogBearTrapLine(
-                    "Alliance route did not reach Territory; retrying from World (attempt "
-                            + routeAttempt + "/" + TERRITORY_TRANSITION_ATTEMPTS + ")"));
-        }
-        if (!territoryReady) {
-            logError(routineLogBearTrapLine("Territory screen did not open"));
-            return false;
-        }
-        tapInside(SPECIAL_BUILDINGS_BUTTON_TL_VALUE, SPECIAL_BUILDINGS_BUTTON_BR_VALUE);
-        if (!awaitConfiguredTrapGoButton(trapNumber)) {
-            logError(routineLogBearTrapLine("Special Buildings did not expose configured Trap " + trapNumber));
-            return false;
-        }
-        boolean success = touchBearTrapGoButton(trapNumber);
-        if (!success) {
-            return false;
-        }
-        boolean worldReady = findFreshTransition(GAME_HOME_WORLD, 90, 3_000).isFound();
-        bearArrivalProofExpiresAt = worldReady ? Instant.now().plusSeconds(3) : null;
-        return worldReady;
-}
-
-private boolean awaitConfiguredTrapGoButton(int trapNumber) {
-        long deadline = System.nanoTime() + Duration.ofMillis(NAVIGATION_TRANSITION_TIMEOUT_MS).toNanos();
-        do {
-            checkPreemption();
-            RawImageData frame = emuManager.captureScreen(EMULATOR_NUMBER);
-            if (BearSpecialBuildingsScreenClassifier.isGoButtonReady(
-                    ImageConverter.toBufferedImage(frame), trapNumber)) {
-                return true;
-            }
-        } while (System.nanoTime() < deadline);
-        return false;
-    }
-
-private boolean openTerritoryFromAllianceMenu() {
-        for (int attempt = 1; attempt <= TERRITORY_TRANSITION_ATTEMPTS; attempt++) {
-            ImageSearchResultData territoryButton = findFreshTransition(
-                    ALLIANCE_TERRITORY_BUTTON, 80, NAVIGATION_TRANSITION_TIMEOUT_MS);
-            if (!territoryButton.isFound()) {
-                return false;
-            }
-            tapInside(territoryButton);
-            if (awaitTerritoryTriggerGone(territoryButton, NAVIGATION_TRANSITION_TIMEOUT_MS)) {
-                return true;
-            }
-            logWarning(routineLogBearTrapLine(
-                    "Territory transition not confirmed; retrying from a fresh Alliance frame (attempt "
-                            + attempt + "/" + TERRITORY_TRANSITION_ATTEMPTS + ")"));
-        }
-        return false;
-    }
-
-private boolean awaitTerritoryTriggerGone(ImageSearchResultData trigger, long timeoutMs) {
-        long deadline = System.nanoTime() + Duration.ofMillis(timeoutMs).toNanos();
-        int consecutiveMisses = 0;
-        do {
-            checkPreemption();
-            RawImageData frame = emuManager.captureScreen(EMULATOR_NUMBER);
-            boolean gone = BearTerritoryTransition.hasLeftTriggerRegion(trigger, area ->
-                    emuManager.locatePattern(
-                            EMULATOR_NUMBER,
-                            frame,
-                            ALLIANCE_TERRITORY_BUTTON,
-                            area.topLeft(),
-                            area.bottomRight(),
-                            80).isFound());
-            consecutiveMisses = gone ? consecutiveMisses + 1 : 0;
-            if (consecutiveMisses >= 2) {
-                return true;
-            }
-        } while (System.nanoTime() < deadline);
-        return false;
-    }
-
-private ImageSearchResultData findFreshTransition(TemplatesEnum template, int threshold, long timeoutMs) {
-        long deadline = System.nanoTime() + Duration.ofMillis(timeoutMs).toNanos();
-        do {
-            checkPreemption();
-            RawImageData frame = emuManager.captureScreen(EMULATOR_NUMBER);
-            ImageSearchResultData result = emuManager.locatePattern(
-                    EMULATOR_NUMBER, frame, template, threshold);
-            if (result.isFound()) {
-                return result;
-            }
-        } while (System.nanoTime() < deadline);
-        return ImageSearchResultData.miss();
-    }
-
-private boolean awaitTemplateGone(TemplatesEnum template, int threshold, long timeoutMs) {
-        long deadline = System.nanoTime() + Duration.ofMillis(timeoutMs).toNanos();
-        int consecutiveMisses = 0;
-        do {
-            checkPreemption();
-            RawImageData frame = emuManager.captureScreen(EMULATOR_NUMBER);
-            boolean present = emuManager.locatePattern(
-                    EMULATOR_NUMBER, frame, template, threshold).isFound();
-            consecutiveMisses = present ? 0 : consecutiveMisses + 1;
-            if (consecutiveMisses >= 2) {
-                return true;
-            }
-        } while (System.nanoTime() < deadline);
-        return false;
-    }
-
 private final class LiveBearSessionDriver implements BearSessionCoordinator.Driver {
 
         private final Instant eventEnd;
@@ -946,12 +559,11 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
         private Instant nextMarchRefreshAt = Instant.MIN;
         private boolean cachedSpecialRallyPreparing;
         private final BearFrameStream<RawImageData> frames;
-        private final BearVerifiedActionExecutor<RawImageData> actions;
+        private final BearUiStateMachine<RawImageData> ui;
         private final TemplateSearchHelper sessionSearch;
         private final MarchHelper sessionMarchHelper;
         private final DeploymentHelper sessionDeploymentHelper;
         private BearFrameStream.Snapshot<RawImageData> lastObservedFrame;
-        private BearFrameStream.Snapshot<RawImageData> lastMatchFrame;
         private int consecutiveRecoveryFailures;
 
         private LiveBearSessionDriver(Instant eventEnd) {
@@ -963,7 +575,8 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                     this::recoverCapture,
                     3,
                     Clock.systemUTC());
-            this.actions = new BearVerifiedActionExecutor<>(frames, 2);
+            this.ui = new BearUiStateMachine<>(
+                    frames, Duration.ofSeconds(4), this::recordTransitionDiagnostic);
             this.sessionSearch = new TemplateSearchHelper(
                     emuManager,
                     EMULATOR_NUMBER,
@@ -984,6 +597,143 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                     durationHelper,
                     profile,
                     () -> frames.nextUnclassified().frame());
+        }
+
+        private void recordTransitionDiagnostic(String diagnostic) {
+            logDebug(routineLogBearTrapLine(diagnostic));
+            if (!diagnostic.startsWith("transition")
+                    && !diagnostic.startsWith("phase")
+                    && !diagnostic.startsWith("terminal")) {
+                return;
+            }
+            BearFrameStream.Snapshot<RawImageData> observed = ui == null ? null : ui.current();
+            if (!BearSessionCheckpoint.recordObservation(profile, new BearSessionCheckpoint.Checkpoint(
+                    eventEnd,
+                    ui == null ? "CONSTRUCTING" : ui.phase().name(),
+                    observed == null ? "UNOBSERVED" : observed.screen().name(),
+                    diagnostic,
+                    observed == null ? frames.latestSequence() : observed.sequence(),
+                    observed == null ? Instant.EPOCH : observed.capturedAt(),
+                    0,
+                    "ui-transition",
+                    Instant.now()))) {
+                logWarning(routineLogBearTrapLine(
+                        "Could not persist Bear transition provenance; scheduler recovery budget was not changed"));
+            }
+        }
+
+        private void beginActivePhase() {
+            ui.phase(BearUiStateMachine.Phase.ACTIVE);
+            BearFrameStream.Snapshot<RawImageData> observed = ui.observe();
+            if (observed.screen() == BearNavigationPolicy.Screen.RECONNECT) {
+                throw protectedFailure(
+                        BearSessionExecutionException.FailureKind.RECONNECT_SCREEN,
+                        BearSessionExecutionException.RecoveryDirective.RESTART_APP,
+                        "active-entry",
+                        null);
+            }
+        }
+
+        private void prepareUntil(Instant activation) {
+            ui.phase(BearUiStateMachine.Phase.PREPARING);
+            prepareFrameDriven();
+            ui.phase(BearUiStateMachine.Phase.WAITING_FOR_ACTIVATION);
+            while (now().isBefore(activation)) {
+                Duration remaining = Duration.between(now(), activation);
+                Duration sampleWindow = remaining.compareTo(Duration.ofSeconds(1)) > 0
+                        ? Duration.ofSeconds(1) : remaining;
+                ui.await(sampleWindow, frame -> frame.screen() == BearNavigationPolicy.Screen.RECONNECT,
+                        "activation-deadline").ifPresent(frame -> {
+                            throw protectedFailure(
+                                    BearSessionExecutionException.FailureKind.RECONNECT_SCREEN,
+                                    BearSessionExecutionException.RecoveryDirective.RESTART_APP,
+                                    "wait-for-activation",
+                                    null);
+                        });
+            }
+            beginActivePhase();
+        }
+
+        private void prepareFrameDriven() {
+            BearFrameStream.Snapshot<RawImageData> observed = ui.observe();
+            if (observed.screen() == BearNavigationPolicy.Screen.RECONNECT) {
+                throw protectedFailure(
+                        BearSessionExecutionException.FailureKind.RECONNECT_SCREEN,
+                        BearSessionExecutionException.RecoveryDirective.RESTART_APP,
+                        "prepare-entry",
+                        null);
+            }
+            if (Boolean.TRUE.equals(profile.getConfig(
+                    ConfigurationKeyEnum.ALLIANCE_AUTOJOIN_BOOL, Boolean.class))) {
+                requireLiveEvidence("autojoin panel and stopped-state frames", "disable-autojoin");
+            }
+            if (recallTroops) {
+                requireLiveEvidence("march-sidebar and recall-confirmation frames", "recall-troops");
+            }
+            if (usePets) {
+                requireLiveEvidence("pet overview, Razorback, quick-use and activated-benefit frames",
+                        "activate-pet");
+            }
+            // Territory and Trap 2 have no positive live identity in the repository yet. Refuse the
+            // old coordinate script; an active-event run can still use the verified red Bear icon.
+            requireLiveEvidence("Territory, Special Buildings, configured Trap and at-Bear frames",
+                    "navigate-to-configured-bear");
+        }
+
+        private void requireLiveEvidence(String evidence, String operation) {
+            throw protectedFailure(
+                    BearSessionExecutionException.FailureKind.FATAL_CONFIGURATION,
+                    BearSessionExecutionException.RecoveryDirective.OPERATOR_ACTION,
+                    operation,
+                    new IllegalStateException("Missing positive live evidence: " + evidence));
+        }
+
+        private void cleanup(
+                BearSessionCoordinator.ExitReason exit,
+                boolean resumeNormalTasks) {
+            ui.phase(BearUiStateMachine.Phase.CLEANING_UP);
+            if (resumeNormalTasks && !verifyTerminalUiCleanup()) {
+                throw protectedFailure(
+                        BearSessionExecutionException.FailureKind.VISUAL_UNKNOWN,
+                        BearSessionExecutionException.RecoveryDirective.OPERATOR_ACTION,
+                        "terminal-cleanup-not-verified",
+                        null);
+            }
+            cleanupFlow(resumeNormalTasks);
+            BearUiStateMachine.TerminalReason terminal = switch (exit == null
+                    ? BearSessionCoordinator.ExitReason.UNRECOVERABLE_FAILURE : exit) {
+                case EVENT_ENDED -> BearUiStateMachine.TerminalReason.EVENT_ENDED;
+                case CANCELLED -> BearUiStateMachine.TerminalReason.CANCELLED;
+                case UNRECOVERABLE_FAILURE -> BearUiStateMachine.TerminalReason.RECOVERY_EXHAUSTED;
+            };
+            ui.terminate(terminal);
+        }
+
+        private boolean verifyTerminalUiCleanup() {
+            for (int attempt = 0; attempt < 4; attempt++) {
+                BearNavigationPolicy.Screen screen = observeBearScreen();
+                if (screen == BearNavigationPolicy.Screen.WORLD
+                        || screen == BearNavigationPolicy.Screen.WORLD_AT_BEAR
+                        || screen == BearNavigationPolicy.Screen.WORLD_AT_VERIFIED_BEAR
+                        || screen == BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY) {
+                    return true;
+                }
+                if (screen == BearNavigationPolicy.Screen.RECONNECT
+                        || screen == BearNavigationPolicy.Screen.APP_LOADING
+                        || screen == BearNavigationPolicy.Screen.TRANSITIONING) {
+                    ui.await(Duration.ofSeconds(1), frame -> frame.screen() != screen,
+                            "terminal-cleanup-wait");
+                    continue;
+                }
+                if (!BearUiAction.BACK_TO_PARENT.legalFrom(screen)
+                        && !BearUiAction.DISMISS_DEPLOY_DIALOG.legalFrom(screen)) {
+                    return false;
+                }
+                if (!backToVerifiedParent(screen)) {
+                    return false;
+                }
+            }
+            return false;
         }
 
         @Override
@@ -1025,7 +775,7 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                         trackedOwnSlot, mayAdoptExisting);
             }
             try {
-                MarchHelper.MarchQueueSnapshot queue = sessionMarchHelper.readMarchQueueSnapshotSinglePass();
+                MarchHelper.MarchQueueSnapshot queue = readMarchSnapshot();
                 List<MarchSlotState> slots = queue.slots();
                 boolean reliable = !slots.isEmpty() && slots.stream()
                         .anyMatch(slot -> slot.availability() != MarchSlotAvailability.UNKNOWN);
@@ -1058,66 +808,69 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.NAVIGATION_FAILURE);
             }
-            ImageSearchResultData rallyButton = findFresh(
-                    BEAR_RALLY_BUTTON, 80, FRESH_TRANSITION_TIMEOUT_MS);
-            if (!rallyButton.isFound()) {
+            if (ui.transition(
+                    BearUiAction.OPEN_RALLY_TIMER,
+                    authorization -> tapTemplateFrom(
+                            authorization, BEAR_RALLY_BUTTON, 80, "open-own-rally-timer"))
+                    != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.STALE_SCREEN);
             }
-
-            tapFresh(rallyButton, "open-own-rally-timer");
-            ImageSearchResultData hold = findFresh(
-                    RALLY_HOLD_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS);
-            if (!hold.isFound()) {
-                return BearSessionCoordinator.OwnRallyStartResult.recoverable(
-                        BearSessionCoordinator.OwnRallyStartOutcome.STALE_SCREEN);
-            }
-
-            if (!sessionDeploymentHelper.selectBearRallySetTimeMinutes(RALLY_DURATION_BASE_MINUTES_VALUE)) {
+            if (!ensureRallyTimeSelected(RALLY_DURATION_BASE_MINUTES_VALUE)) {
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.RALLY_TIMER_NOT_CONFIRMED);
             }
             int rallySeconds = RALLY_DURATION_BASE_MINUTES_VALUE * 60;
-            tapFresh(hold, "confirm-own-rally-timer");
-            if (!findFresh(BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS).isFound()) {
+            if (ui.transition(
+                    BearUiAction.CONFIRM_RALLY_TIMER,
+                    authorization -> tapTemplateFrom(
+                            authorization, RALLY_HOLD_BUTTON, 90, "confirm-own-rally-timer"))
+                    != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.STALE_SCREEN);
             }
-            if (!sessionMarchHelper.selectFlag(formation)) {
-                pressBack();
+            if (!ensureFormationSelected(formation)) {
+                backToVerifiedParent(BearNavigationPolicy.Screen.FORMATION);
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.FORMATION_UNAVAILABLE);
             }
+            BearFrameStream.Snapshot<RawImageData> preflightFrame = ui.observe();
+            if (preflightFrame.screen() != BearNavigationPolicy.Screen.FORMATION) {
+                return BearSessionCoordinator.OwnRallyStartResult.recoverable(
+                        BearSessionCoordinator.OwnRallyStartOutcome.STALE_SCREEN);
+            }
             DeploymentPreflightRead preflight = sessionDeploymentHelper.readPreflightScreen(
-                    DeploymentHelper.MAX_RALLY_STAMINA_COST);
+                    preflightFrame.frame(), DeploymentHelper.MAX_RALLY_STAMINA_COST);
             if (preflight.noDeployableTroops()) {
-                pressBack();
+                backToVerifiedParent(BearNavigationPolicy.Screen.FORMATION);
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.FORMATION_UNAVAILABLE);
             }
 
             long travelSeconds = preflight.deployment().travelTimeSeconds();
             if (travelSeconds <= 0) {
-                pressBack();
+                backToVerifiedParent(BearNavigationPolicy.Screen.FORMATION);
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.OCR_MISS);
             }
             if (now().plusSeconds(rallySeconds + travelSeconds).isAfter(eventEnd)) {
-                pressBack();
+                backToVerifiedParent(BearNavigationPolicy.Screen.FORMATION);
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.TOO_LATE);
             }
 
-            ImageSearchResultData deploy = findFresh(
-                    BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS);
-            if (!deploy.isFound()) {
+            BearVerifiedActionExecutor.Outcome deployOutcome = ui.transition(
+                    BearUiAction.DEPLOY_OWN_RALLY,
+                    authorization -> tapTemplateFrom(
+                            authorization, BEAR_DEPLOY_BUTTON, 90, "deploy-own-rally"));
+            if (deployOutcome != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
-                        BearSessionCoordinator.OwnRallyStartOutcome.STALE_SCREEN);
+                        BearSessionCoordinator.OwnRallyStartOutcome.DEPLOY_NOT_CONFIRMED);
             }
-            tapFresh(deploy, "deploy-own-rally");
-            DeploymentPostTapRead postTap = awaitPostDeployState(FRESH_TRANSITION_TIMEOUT_MS);
+            DeploymentPostTapRead postTap = sessionDeploymentHelper.readPostTapScreen(
+                    ui.current().frame());
             if (postTap.marchQueueFull()) {
-                sessionDeploymentHelper.dismissMarchQueueFullPopup();
+                backToVerifiedParent(BearNavigationPolicy.Screen.MARCH_QUEUE_FULL);
                 return BearSessionCoordinator.OwnRallyStartResult.recoverable(
                         BearSessionCoordinator.OwnRallyStartOutcome.MARCH_QUEUE_FULL);
             }
@@ -1172,8 +925,12 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                 long knownTroops = formationTroopCounts.getOrDefault(formation, 0L);
                 Set<String> rejected = rejectedCandidatesByFormation.computeIfAbsent(
                         formation, ignored -> new HashSet<>());
-                BearRallyScanner.ScanResult scan = new BearRallyScanner(sessionSearch)
-                        .scan(now());
+                BearFrameStream.Snapshot<RawImageData> scanFrame = ui.observe();
+                if (scanFrame.screen() != BearNavigationPolicy.Screen.WAR_LIST) {
+                    return BearSessionCoordinator.JoinOutcome.PAGE_NOT_READY;
+                }
+                BearRallyScanner.ScanResult scan = new BearRallyScanner(
+                        sessionSearch, scanFrame.frame()).scan(scanFrame.capturedAt());
                 Optional<BearRallyCandidate> selected = BearRallyCandidateSelector.selectBest(
                         scan.candidates(), knownTroops, rejected);
                 if (selected.isEmpty()) {
@@ -1182,9 +939,13 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                             : BearSessionCoordinator.JoinOutcome.NO_JOINABLE_RALLY;
                 }
                 BearRallyCandidate candidate = selected.get();
-                BearRallyScanner.ScanResult authorizationScan =
-                        new BearRallyScanner(sessionSearch).scan(now());
-                Instant authorizationTime = now();
+                BearFrameStream.Snapshot<RawImageData> authorizationFrame = ui.observe();
+                if (authorizationFrame.screen() != BearNavigationPolicy.Screen.WAR_LIST) {
+                    return BearSessionCoordinator.JoinOutcome.RALLY_DEPARTED;
+                }
+                BearRallyScanner.ScanResult authorizationScan = new BearRallyScanner(
+                        sessionSearch, authorizationFrame.frame()).scan(authorizationFrame.capturedAt());
+                Instant authorizationTime = authorizationFrame.capturedAt();
                 Optional<BearRallyCandidate> authorizedCandidate =
                         BearRallyCandidateSelector.reauthorize(
                                 candidate,
@@ -1197,23 +958,31 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                     return BearSessionCoordinator.JoinOutcome.RALLY_DEPARTED;
                 }
                 candidate = authorizedCandidate.get();
-                tapInside(candidate.joinButtonArea());
                 warListKnown = false;
-                ImageSearchResultData deployReady = findFresh(
-                        BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS);
-                if (!deployReady.isFound()) {
+                AreaData authorizedJoinButton = candidate.joinButtonArea();
+                if (ui.transition(
+                        BearUiAction.OPEN_JOIN_FORMATION,
+                        authorization -> tapInside(authorizedJoinButton))
+                        != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                     rejected.add(candidate.stableKey());
                     return BearSessionCoordinator.JoinOutcome.RALLY_DEPARTED;
                 }
-                if (!sessionMarchHelper.selectFlag(formation)) {
+                if (!ensureFormationSelected(formation)) {
                     returnToWarListFromFormation();
                     return BearSessionCoordinator.JoinOutcome.FORMATION_UNAVAILABLE;
                 }
-                if (sessionDeploymentHelper.hasNoDeployableTroops()) {
+                BearFrameStream.Snapshot<RawImageData> preflightFrame = ui.observe();
+                if (preflightFrame.screen() != BearNavigationPolicy.Screen.FORMATION) {
+                    return BearSessionCoordinator.JoinOutcome.STALE_SCREEN;
+                }
+                DeploymentPreflightRead joinPreflight = sessionDeploymentHelper.readPreflightScreen(
+                        preflightFrame.frame(), DeploymentHelper.MAX_RALLY_STAMINA_COST);
+                if (joinPreflight.noDeployableTroops()) {
                     returnToWarListFromFormation();
                     return BearSessionCoordinator.JoinOutcome.FORMATION_UNAVAILABLE;
                 }
-                long selectedTroops = sessionDeploymentHelper.readSelectedTroopCount();
+                long selectedTroops = sessionDeploymentHelper.readSelectedTroopCount(
+                        preflightFrame.frame());
                 if (selectedTroops < 0) {
                     returnToWarListFromFormation();
                     return BearSessionCoordinator.JoinOutcome.OCR_MISS;
@@ -1229,16 +998,18 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                     returnToWarListFromFormation();
                     return BearSessionCoordinator.JoinOutcome.RALLY_FULL;
                 }
-                ImageSearchResultData deploy = findFresh(
-                        BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS);
-                if (!deploy.isFound()) {
+                if (ui.transition(
+                        BearUiAction.DEPLOY_JOIN,
+                        authorization -> tapTemplateFrom(
+                                authorization, BEAR_DEPLOY_BUTTON, 90, "deploy-joined-rally"))
+                        != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                     rejected.add(candidate.stableKey());
-                    return BearSessionCoordinator.JoinOutcome.RALLY_DEPARTED;
+                    return BearSessionCoordinator.JoinOutcome.RALLY_GONE;
                 }
-                tapFresh(deploy, "deploy-joined-rally");
-                DeploymentPostTapRead postTap = awaitPostDeployState(FRESH_TRANSITION_TIMEOUT_MS);
+                DeploymentPostTapRead postTap = sessionDeploymentHelper.readPostTapScreen(
+                        ui.current().frame());
                 if (postTap.marchQueueFull()) {
-                    sessionDeploymentHelper.dismissMarchQueueFullPopup();
+                    backToVerifiedParent(BearNavigationPolicy.Screen.MARCH_QUEUE_FULL);
                     return BearSessionCoordinator.JoinOutcome.MARCH_QUEUE_FULL;
                 }
                 if (postTap.sameTargetDialog()) {
@@ -1296,14 +1067,18 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
 
         private boolean recoverOnce(BearSessionCoordinator.State resumeState) {
             try {
+                ui.phase(BearUiStateMachine.Phase.RECOVERING);
                 BearNavigationPolicy.Screen screen = observeBearScreen();
                 if (screen == BearNavigationPolicy.Screen.FORMATION
                         || screen == BearNavigationPolicy.Screen.RALLY_TIMER_PANEL
                         || screen == BearNavigationPolicy.Screen.BEAR_RALLY_PANEL
                         || screen == BearNavigationPolicy.Screen.ALLIANCE_MENU
                         || screen == BearNavigationPolicy.Screen.WAR_LIST) {
-                    pressBack();
-                    return awaitKnownScreenChange(screen);
+                    boolean recovered = backToVerifiedParent(screen);
+                    if (recovered) {
+                        ui.phase(BearUiStateMachine.Phase.ACTIVE);
+                    }
+                    return recovered;
                 }
                 if (screen != BearNavigationPolicy.Screen.UNKNOWN) {
                     if (screen == BearNavigationPolicy.Screen.RECONNECT) {
@@ -1315,16 +1090,24 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                     }
                     if (screen == BearNavigationPolicy.Screen.APP_LOADING
                             || screen == BearNavigationPolicy.Screen.TRANSITIONING) {
-                        return frames.awaitAfter(
-                                lastObservedFrame.sequence(),
+                        boolean recovered = ui.await(
                                 Duration.ofSeconds(2),
                                 frame -> frame.screen() != BearNavigationPolicy.Screen.APP_LOADING
                                         && frame.screen() != BearNavigationPolicy.Screen.TRANSITIONING
-                                        && frame.screen() != BearNavigationPolicy.Screen.UNKNOWN)
+                                        && frame.screen() != BearNavigationPolicy.Screen.UNKNOWN,
+                                "bounded-recovery-" + resumeState)
                                 .filter(frame -> validRecoveryDestination(resumeState, frame.screen()))
                                 .isPresent();
+                        if (recovered) {
+                            ui.phase(BearUiStateMachine.Phase.ACTIVE);
+                        }
+                        return recovered;
                     }
-                    return validRecoveryDestination(resumeState, screen);
+                    boolean recovered = validRecoveryDestination(resumeState, screen);
+                    if (recovered) {
+                        ui.phase(BearUiStateMachine.Phase.ACTIVE);
+                    }
+                    return recovered;
                 }
                 throw protectedFailure(
                         BearSessionExecutionException.FailureKind.VISUAL_UNKNOWN,
@@ -1344,8 +1127,28 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
 
         @Override
         public void pause(Duration duration) {
-            if (!duration.isZero() && !duration.isNegative()) {
-                sleepTask(duration.toMillis());
+            if (duration.isZero() || duration.isNegative()) {
+                return;
+            }
+            Instant deadline = now().plus(duration);
+            while (now().isBefore(deadline) && now().isBefore(eventEnd)) {
+                Duration remaining = Duration.between(now(), deadline);
+                Duration sampleWindow = remaining.compareTo(Duration.ofSeconds(1)) > 0
+                        ? Duration.ofSeconds(1) : remaining;
+                Optional<BearFrameStream.Snapshot<RawImageData>> exceptional = ui.await(
+                        sampleWindow,
+                        frame -> frame.screen() == BearNavigationPolicy.Screen.RECONNECT
+                                || frame.screen() == BearNavigationPolicy.Screen.APP_LOADING,
+                        "coordinator-wait");
+                if (exceptional.isPresent()
+                        && exceptional.orElseThrow().screen() == BearNavigationPolicy.Screen.RECONNECT) {
+                    throw protectedFailure(
+                            BearSessionExecutionException.FailureKind.RECONNECT_SCREEN,
+                            BearSessionExecutionException.RecoveryDirective.RESTART_APP,
+                            "coordinator-wait",
+                            null);
+                }
+                checkPreemption();
             }
         }
 
@@ -1362,7 +1165,40 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
         }
 
         private MarchHelper.MarchQueueSnapshot readMarchSnapshot() {
-            MarchHelper.MarchQueueSnapshot snapshot = sessionMarchHelper.readMarchQueueSnapshotSinglePass();
+            BearNavigationPolicy.Screen screen = observeBearScreen();
+            if (screen != BearNavigationPolicy.Screen.MARCH_SIDEBAR) {
+                if (screen != BearNavigationPolicy.Screen.WORLD
+                        && screen != BearNavigationPolicy.Screen.WORLD_AT_BEAR
+                        && screen != BearNavigationPolicy.Screen.WORLD_AT_VERIFIED_BEAR
+                        && screen != BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY) {
+                    return new MarchHelper.MarchQueueSnapshot(List.of(), false);
+                }
+                if (ui.transition(
+                        BearUiAction.OPEN_MARCH_SIDEBAR,
+                        authorization -> tapInside(CommonGameAreas.LEFT_MENU_TRIGGER))
+                        != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
+                    return new MarchHelper.MarchQueueSnapshot(List.of(), false);
+                }
+                screen = ui.current().screen();
+            }
+            if (screen == BearNavigationPolicy.Screen.SIDEBAR_OTHER) {
+                if (ui.transition(
+                        BearUiAction.SELECT_MARCH_SIDEBAR,
+                        authorization -> tapInside(
+                                CommonGameAreas.sidebarTab(SidebarSection.WILDERNESS)))
+                        != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
+                    return new MarchHelper.MarchQueueSnapshot(List.of(), false);
+                }
+            }
+            BearFrameStream.Snapshot<RawImageData> marchFrame = ui.current();
+            MarchHelper.MarchQueueSnapshot snapshot = sessionMarchHelper
+                    .readVisibleMarchQueueSnapshot(marchFrame.frame());
+            BearVerifiedActionExecutor.Outcome closed = ui.transition(
+                    BearUiAction.CLOSE_MARCH_SIDEBAR,
+                    authorization -> tapInside(CommonGameAreas.LEFT_MENU_CLOSE));
+            if (closed != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
+                return new MarchHelper.MarchQueueSnapshot(List.of(), false);
+            }
             if (!snapshot.slots().isEmpty()) {
                 rememberMarchSnapshot(snapshot, now());
             }
@@ -1480,7 +1316,11 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
         private OptionalInt awaitNewRallySlot(List<MarchSlotState> before) {
             long deadline = System.nanoTime()
                     + Duration.ofMillis(POST_DEPLOY_CONFIRMATION_TIMEOUT_MS).toNanos();
-            if (!findFresh(GAME_HOME_WORLD, 90, FRESH_TRANSITION_TIMEOUT_MS).isFound()) {
+            BearNavigationPolicy.Screen postDeploy = observeBearScreen();
+            if (postDeploy != BearNavigationPolicy.Screen.WORLD
+                    && postDeploy != BearNavigationPolicy.Screen.WORLD_AT_BEAR
+                    && postDeploy != BearNavigationPolicy.Screen.WORLD_AT_VERIFIED_BEAR
+                    && postDeploy != BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY) {
                 logWarning(routineLogBearTrapLine(
                         "Own rally deployment left no stable World frame for confirmation"));
                 return OptionalInt.empty();
@@ -1501,7 +1341,8 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                             "World was not ready for own-rally confirmation: " + e.getMessage()));
                 }
                 if (System.nanoTime() < deadline) {
-                    sleepTask(POST_DEPLOY_CONFIRMATION_POLL_MS);
+                    ui.await(Duration.ofMillis(POST_DEPLOY_CONFIRMATION_POLL_MS),
+                            frame -> false, "own-rally-march-confirmation-sample-cadence");
                 }
             } while (System.nanoTime() < deadline);
             return OptionalInt.empty();
@@ -1532,7 +1373,8 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                             "World was not ready for joined-rally confirmation: " + e.getMessage()));
                 }
                 if (System.nanoTime() < deadline) {
-                    sleepTask(POST_DEPLOY_CONFIRMATION_POLL_MS);
+                    ui.await(Duration.ofMillis(POST_DEPLOY_CONFIRMATION_POLL_MS),
+                            frame -> false, "joined-rally-march-confirmation-sample-cadence");
                 }
             } while (System.nanoTime() < deadline);
             return false;
@@ -1549,12 +1391,14 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                         return true;
                     }
                     case BACK_ONCE -> {
-                        pressBack();
-                        if (awaitKnownScreenChange(screen)) {
+                        if (backToVerifiedParent(screen)) {
                             return true;
                         }
                     }
-                    case WAIT_FOR_FRAME -> sleepTask(POST_DEPLOY_CONFIRMATION_POLL_MS);
+                    case WAIT_FOR_FRAME -> ui.await(
+                            Duration.ofMillis(POST_DEPLOY_CONFIRMATION_POLL_MS),
+                            frame -> frame.screen() != screen,
+                            "return-to-world");
                     case FAIL_CLOSED -> {
                         return false;
                     }
@@ -1576,58 +1420,37 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                         return true;
                     }
                     case TAP_BEAR_ANCHOR -> {
-                        BearVerifiedActionExecutor.Outcome outcome = actions.tapWithOneVerifiedRetry(
-                                lastObservedFrame,
-                                () -> tapInside(BEAR_CENTER_POINT_VALUE, BEAR_CENTER_POINT_VALUE),
-                                frame -> frame.screen() == BearNavigationPolicy.Screen.BEAR_RALLY_PANEL,
-                                frame -> frame.screen() == BearNavigationPolicy.Screen.WORLD_AT_BEAR);
+                        BearVerifiedActionExecutor.Outcome outcome = ui.transition(
+                                BearUiAction.OPEN_BEAR_PANEL,
+                                authorization -> tapInside(BEAR_CENTER_POINT_VALUE, BEAR_CENTER_POINT_VALUE),
+                                frame -> frame.screen() == BearNavigationPolicy.Screen.WORLD_AT_BEAR
+                                        || frame.screen() == BearNavigationPolicy.Screen.WORLD_AT_VERIFIED_BEAR,
+                                1);
                         if (outcome == BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                             warListKnown = false;
                             return true;
                         }
-                        bearArrivalProofExpiresAt = null;
                     }
                     case TAP_ACTIVE_BEAR_ICON -> {
-                        if (!frames.isFresh(lastObservedFrame, Duration.ofSeconds(2))) {
+                        BearVerifiedActionExecutor.Outcome arrived = ui.transition(
+                                BearUiAction.OPEN_ACTIVE_BEAR,
+                                authorization -> tapTemplateFrom(
+                                        authorization, BEAR_HUNT_IS_RUNNING, 90, "active-bear-icon"));
+                        if (arrived != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                             return false;
                         }
-                        ImageSearchResultData activeBear = emuManager.locatePattern(
-                                EMULATOR_NUMBER,
-                                lastObservedFrame.frame(),
-                                BEAR_HUNT_IS_RUNNING,
-                                90);
-                        if (!activeBear.isFound()) {
-                            return false;
+                        BearVerifiedActionExecutor.Outcome opened = ui.transition(
+                                BearUiAction.OPEN_BEAR_PANEL,
+                                authorization -> tapInside(BEAR_CENTER_POINT_VALUE, BEAR_CENTER_POINT_VALUE));
+                        if (opened == BearVerifiedActionExecutor.Outcome.CONFIRMED) {
+                            return true;
                         }
-                        long sourceSequence = lastObservedFrame.sequence();
-                        tapInside(activeBear);
-                        boolean arrived = frames.awaitAfter(
-                                sourceSequence,
-                                Duration.ofMillis(NAVIGATION_TRANSITION_TIMEOUT_MS),
-                                frame -> emuManager.locatePattern(
-                                                EMULATOR_NUMBER,
-                                                frame.frame(),
-                                                GAME_HOME_WORLD,
-                                                90).isFound()
-                                        && !emuManager.locatePattern(
-                                                EMULATOR_NUMBER,
-                                                frame.frame(),
-                                                BEAR_HUNT_IS_RUNNING,
-                                                90).isFound())
-                                .isPresent();
-                        if (!arrived) {
-                            return false;
-                        }
-                        bearArrivalProofExpiresAt = now().plusSeconds(3);
                     }
                     case ROUTE_TO_BEAR -> {
-                        if (!reachBearTrap(trapNumber)) {
-                            return false;
-                        }
+                        return false;
                     }
                     case BACK_ONCE -> {
-                        pressBack();
-                        if (!awaitKnownScreenChange(screen)) {
+                        if (!backToVerifiedParent(screen)) {
                             return false;
                         }
                     }
@@ -1657,19 +1480,12 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                         return true;
                     }
                     case TAP_WAR -> {
-                        ImageSearchResultData rallyIndicator = findFresh(RALLY_INDICATOR, 80, 500);
-                        if (!rallyIndicator.isFound()) {
-                            return false;
-                        }
-                        long sourceSequence = lastMatchFrame.sequence();
                         warListKnown = true;
-                        tapFresh(rallyIndicator, "open-war-list");
-                        boolean warListVisible = frames.awaitAfter(
-                                sourceSequence,
-                                Duration.ofMillis(FRESH_TRANSITION_TIMEOUT_MS),
-                                frame -> frame.screen() == BearNavigationPolicy.Screen.WAR_LIST)
-                                .isPresent();
-                        if (!warListVisible) {
+                        BearVerifiedActionExecutor.Outcome opened = ui.transition(
+                                BearUiAction.OPEN_WAR_LIST,
+                                authorization -> tapTemplateFrom(
+                                        authorization, RALLY_INDICATOR, 80, "rally-indicator"));
+                        if (opened != BearVerifiedActionExecutor.Outcome.CONFIRMED) {
                             warListKnown = false;
                             return false;
                         }
@@ -1677,8 +1493,7 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
                         return true;
                     }
                     case BACK_ONCE -> {
-                        pressBack();
-                        if (!awaitKnownScreenChange(screen)) {
+                        if (!backToVerifiedParent(screen)) {
                             return false;
                         }
                     }
@@ -1693,139 +1508,204 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
             return false;
         }
 
-        private DeploymentPostTapRead awaitPostDeployState(long timeoutMs) {
-            long deadline = System.nanoTime() + Duration.ofMillis(timeoutMs).toNanos();
-            DeploymentPostTapRead last = new DeploymentPostTapRead(
-                    false, ImageSearchResultData.miss(), false, ImageSearchResultData.miss());
-            do {
-                checkPreemption();
-                last = sessionDeploymentHelper.readPostTapScreen();
-                if (last.marchQueueFull()
-                        || last.confirmationDialog().isFound()
-                        || last.sameTargetDialog()
-                        || !last.deployButton().isFound()) {
-                    return last;
+        private void tapTemplateFrom(
+                BearFrameStream.Snapshot<RawImageData> authorization,
+                TemplatesEnum template,
+                int threshold,
+                String operation) {
+            ImageSearchResultData hit = emuManager.locatePattern(
+                    EMULATOR_NUMBER, authorization.frame(), template, threshold);
+            if (!hit.isFound()) {
+                throw protectedFailure(
+                        BearSessionExecutionException.FailureKind.VISUAL_UNKNOWN,
+                        BearSessionExecutionException.RecoveryDirective.DEGRADED_WAIT,
+                        operation + "-missing-in-authorizing-frame",
+                        null);
+            }
+            tapInside(hit);
+        }
+
+        private boolean ensureRallyTimeSelected(int minutes) {
+            BearFrameStream.Snapshot<RawImageData> current = ui.current();
+            if (current == null || current.screen() != BearNavigationPolicy.Screen.RALLY_TIMER_PANEL) {
+                current = ui.observe();
+            }
+            if (current.screen() != BearNavigationPolicy.Screen.RALLY_TIMER_PANEL) {
+                return false;
+            }
+            if (DeploymentHelper.selectedBearRallySetTimeMinutes(
+                    ImageConverter.toBufferedImage(current.frame())) == minutes) {
+                return true;
+            }
+            int option = -1;
+            for (int i = 0; i < CommonGameAreas.BEAR_RALLY_SET_TIME_MINUTES.length; i++) {
+                if (CommonGameAreas.BEAR_RALLY_SET_TIME_MINUTES[i] == minutes) {
+                    option = i;
+                    break;
                 }
-            } while (System.nanoTime() < deadline);
-            return last;
+            }
+            if (option < 0) {
+                return false;
+            }
+            AreaData checkbox = CommonGameAreas.BEAR_RALLY_SET_TIME_CHECKBOXES[option];
+            return ui.transition(
+                    BearUiAction.SELECT_RALLY_TIME,
+                    authorization -> tapInside(checkbox),
+                    "newer rally-timer frame with " + minutes + " minute green tick",
+                    frame -> frame.screen() == BearNavigationPolicy.Screen.RALLY_TIMER_PANEL
+                            && DeploymentHelper.selectedBearRallySetTimeMinutes(
+                                    ImageConverter.toBufferedImage(frame.frame())) == minutes,
+                    frame -> frame.screen() == BearNavigationPolicy.Screen.RALLY_TIMER_PANEL,
+                    0) == BearVerifiedActionExecutor.Outcome.CONFIRMED;
+        }
+
+        private boolean ensureFormationSelected(int formation) {
+            if (!FormationSlots.supports(formation) || formation > 8) {
+                // High-slot selection requires a swipe transition and real right-end frame evidence.
+                return false;
+            }
+            BearFrameStream.Snapshot<RawImageData> current = ui.current();
+            if (current == null || current.screen() != BearNavigationPolicy.Screen.FORMATION) {
+                current = ui.observe();
+            }
+            if (current.screen() != BearNavigationPolicy.Screen.FORMATION) {
+                return false;
+            }
+            AreaData slot = RallyFlagCoordinates.selectionAreaForFlag(formation);
+            if (FormationSelectionVerifier.isSelected(
+                    ImageConverter.toBufferedImage(current.frame()), slot)) {
+                return true;
+            }
+            PointData target = RallyFlagCoordinates.pointForFlag(formation);
+            return ui.transition(
+                    BearUiAction.SELECT_FORMATION,
+                    authorization -> tapInside(target, target),
+                    "newer formation frame with selected yellow outline for #" + formation,
+                    frame -> frame.screen() == BearNavigationPolicy.Screen.FORMATION
+                            && FormationSelectionVerifier.isSelected(
+                                    ImageConverter.toBufferedImage(frame.frame()), slot),
+                    frame -> frame.screen() == BearNavigationPolicy.Screen.FORMATION,
+                    0) == BearVerifiedActionExecutor.Outcome.CONFIRMED;
+        }
+
+        private boolean backToVerifiedParent(BearNavigationPolicy.Screen source) {
+            BearUiAction action = source == BearNavigationPolicy.Screen.DEPLOY_CONFIRMATION
+                    || source == BearNavigationPolicy.Screen.MARCH_QUEUE_FULL
+                    ? BearUiAction.DISMISS_DEPLOY_DIALOG
+                    : BearUiAction.BACK_TO_PARENT;
+            BearVerifiedActionExecutor.Outcome outcome = ui.transition(
+                    action,
+                    authorization -> pressBack(),
+                    "newer frame at the verified parent of " + source,
+                    frame -> BearUiAction.confirmsBackFrom(source, frame.screen()),
+                    frame -> frame.screen() == source,
+                    0);
+            if (source == BearNavigationPolicy.Screen.WAR_LIST
+                    && outcome == BearVerifiedActionExecutor.Outcome.CONFIRMED) {
+                warListKnown = false;
+            }
+            return outcome == BearVerifiedActionExecutor.Outcome.CONFIRMED;
         }
 
         private void leaveVerifiedFormationScreen() {
-            pressBack();
-            if (findFresh(BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS).isFound()) {
-                pressBack();
+            BearNavigationPolicy.Screen screen = observeBearScreen();
+            if (screen == BearNavigationPolicy.Screen.DEPLOY_CONFIRMATION
+                    || screen == BearNavigationPolicy.Screen.MARCH_QUEUE_FULL) {
+                backToVerifiedParent(screen);
+                screen = observeBearScreen();
+            }
+            if (screen == BearNavigationPolicy.Screen.FORMATION) {
+                backToVerifiedParent(screen);
             }
         }
 
         private void returnToWarListFromFormation() {
-            pressBack();
-            warListKnown = awaitTemplateGone(
-                    BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS);
+            BearNavigationPolicy.Screen screen = observeBearScreen();
+            warListKnown = screen == BearNavigationPolicy.Screen.FORMATION
+                    && backToVerifiedParent(screen)
+                    && ui.current() != null
+                    && ui.current().screen() == BearNavigationPolicy.Screen.WAR_LIST;
         }
 
         private void dismissDeployConfirmationAndLeaveFormation() {
             // The live Bear capacity warning must never trigger Equalize or alter the configured
             // flag. Back dismisses the proven dialog; a second verified transition leaves formation.
-            pressBack();
-            awaitTemplateGone(DEPLOY_CONFIRMATION_DIALOG, 90, FRESH_TRANSITION_TIMEOUT_MS);
-            if (findFresh(BEAR_DEPLOY_BUTTON, 90, FRESH_TRANSITION_TIMEOUT_MS).isFound()) {
+            BearNavigationPolicy.Screen screen = observeBearScreen();
+            if (screen == BearNavigationPolicy.Screen.DEPLOY_CONFIRMATION) {
+                backToVerifiedParent(screen);
+            }
+            if (observeBearScreen() == BearNavigationPolicy.Screen.FORMATION) {
                 returnToWarListFromFormation();
             }
         }
 
-        private boolean awaitKnownScreenChange(BearNavigationPolicy.Screen previous) {
-            long earlierSequence = lastObservedFrame == null ? 0 : lastObservedFrame.sequence();
-            if (previous == BearNavigationPolicy.Screen.WAR_LIST) {
-                warListKnown = false;
-            }
-            return frames.awaitAfter(
-                    earlierSequence,
-                    Duration.ofMillis(FRESH_TRANSITION_TIMEOUT_MS),
-                    frame -> isPositiveBackDestination(previous, frame.screen()))
-                    .isPresent();
-        }
-
-        private boolean isPositiveBackDestination(
-                BearNavigationPolicy.Screen previous,
-                BearNavigationPolicy.Screen destination) {
-            return switch (previous) {
-                case WAR_LIST -> destination == BearNavigationPolicy.Screen.WORLD
-                        || destination == BearNavigationPolicy.Screen.WORLD_AT_BEAR
-                        || destination == BearNavigationPolicy.Screen.WORLD_AT_VERIFIED_BEAR
-                        || destination == BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY;
-                case FORMATION -> destination == BearNavigationPolicy.Screen.WAR_LIST
-                        || destination == BearNavigationPolicy.Screen.BEAR_RALLY_PANEL
-                        || destination == BearNavigationPolicy.Screen.RALLY_TIMER_PANEL;
-                case RALLY_TIMER_PANEL -> destination == BearNavigationPolicy.Screen.BEAR_RALLY_PANEL;
-                case BEAR_RALLY_PANEL -> destination == BearNavigationPolicy.Screen.WORLD
-                        || destination == BearNavigationPolicy.Screen.WORLD_AT_BEAR
-                        || destination == BearNavigationPolicy.Screen.WORLD_AT_VERIFIED_BEAR
-                        || destination == BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY;
-                case ALLIANCE_MENU -> destination == BearNavigationPolicy.Screen.WORLD;
-                default -> false;
-            };
-        }
-
         private BearNavigationPolicy.Screen observeBearScreen() {
             checkPreemption();
-            lastObservedFrame = frames.next();
+            lastObservedFrame = ui.observe();
             return lastObservedFrame.screen();
         }
 
         private BearNavigationPolicy.Screen classifyBearScreen(RawImageData frame) {
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, GAME_HOME_RECONNECT, 85).isFound()) {
-                return BearNavigationPolicy.Screen.RECONNECT;
-            }
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, GAME_START_WELCOME_BACK_TITLE, 85).isFound()
-                    || emuManager.locatePattern(EMULATOR_NUMBER, frame, GAME_START_DOWNLOAD_NOW, 85).isFound()
-                    || emuManager.locatePattern(
-                            EMULATOR_NUMBER, frame, GAME_START_MANDATORY_UPDATE_TITLE, 85).isFound()) {
-                return BearNavigationPolicy.Screen.APP_LOADING;
-            }
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, BEAR_DEPLOY_BUTTON, 90).isFound()) {
-                return BearNavigationPolicy.Screen.FORMATION;
-            }
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, BEAR_RALLY_BUTTON, 80).isFound()) {
-                return BearNavigationPolicy.Screen.BEAR_RALLY_PANEL;
-            }
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, RALLY_HOLD_BUTTON, 90).isFound()) {
-                return BearNavigationPolicy.Screen.RALLY_TIMER_PANEL;
-            }
             boolean joinButtonVisible = emuManager.locatePattern(
                     EMULATOR_NUMBER, frame, BEAR_JOIN_PLUS_ICON, 80).isFound();
             boolean warCloseVisible = emuManager.locatePattern(
                     EMULATOR_NUMBER, frame, BEAR_WAR_LIST_CLOSE, 85).isFound();
-            if (BearWarListIdentity.isVisible(warListKnown, warCloseVisible, joinButtonVisible ? 1 : 0)) {
-                warListKnown = true;
-                return BearNavigationPolicy.Screen.WAR_LIST;
-            }
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, GAME_HOME_WORLD, 90).isFound()) {
-                warListKnown = false;
-                if (bearAnchorIsFresh()) {
-                    return BearNavigationPolicy.Screen.WORLD_AT_BEAR;
-                }
-                if (emuManager.locatePattern(
-                        EMULATOR_NUMBER, frame, BEAR_HUNT_IS_RUNNING, 90).isFound()) {
-                    return BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY;
-                }
-                return BearNavigationPolicy.Screen.WORLD;
-            }
-            if (emuManager.locatePattern(EMULATOR_NUMBER, frame, ALLIANCE_TERRITORY_BUTTON, 80).isFound()) {
-                return BearNavigationPolicy.Screen.ALLIANCE_MENU;
-            }
-            return BearNavigationPolicy.Screen.UNKNOWN;
+            boolean world = emuManager.locatePattern(EMULATOR_NUMBER, frame, GAME_HOME_WORLD, 90).isFound();
+            boolean war = BearWarListIdentity.isVisible(
+                    warListKnown, warCloseVisible, joinButtonVisible ? 1 : 0);
+            BearNavigationPolicy.Screen screen = BearScreenClassifier.classify(
+                    new BearScreenClassifier.Evidence(
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame, GAME_HOME_RECONNECT, 85).isFound(),
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                    GAME_START_WELCOME_BACK_TITLE, 85).isFound()
+                                    || emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                            GAME_START_DOWNLOAD_NOW, 85).isFound()
+                                    || emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                            GAME_START_MANDATORY_UPDATE_TITLE, 85).isFound(),
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                    RALLY_MARCH_QUEUE_FULL, 85).isFound(),
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                    DEPLOY_CONFIRMATION_DIALOG, 90).isFound()
+                                    || emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                            TROOPS_ALREADY_MARCHING, 90).isFound(),
+                            false,
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame, BEAR_DEPLOY_BUTTON, 90).isFound(),
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame, RALLY_HOLD_BUTTON, 90).isFound(),
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame, BEAR_RALLY_BUTTON, 80).isFound(),
+                            war,
+                            false,
+                            false,
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                    ALLIANCE_TERRITORY_BUTTON, 80).isFound(),
+                            false,
+                            BearSpecialBuildingsScreenClassifier.isGoButtonReady(
+                                    ImageConverter.toBufferedImage(frame), trapNumber),
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                    PETS_INFO_SKILLS, 85).isFound(),
+                            false,
+                            emuManager.locatePattern(EMULATOR_NUMBER, frame,
+                                    PETS_SKILL_USE, 85).isFound(),
+                            SidebarFrameClassifier.selectedSection(
+                                    ImageConverter.toBufferedImage(frame))
+                                    .orElse(null) == SidebarSection.WILDERNESS,
+                            SidebarFrameClassifier.selectedSection(
+                                    ImageConverter.toBufferedImage(frame))
+                                    .filter(section -> section != SidebarSection.WILDERNESS)
+                                    .isPresent(),
+                            world,
+                            world && emuManager.locatePattern(
+                                    EMULATOR_NUMBER, frame, BEAR_HUNT_IS_RUNNING, 90).isFound(),
+                            false,
+                            false));
+            warListKnown = screen == BearNavigationPolicy.Screen.WAR_LIST;
+            return screen;
         }
 
         private boolean recoverCapture(RuntimeException failure, int failedAttempt) {
             if (Thread.currentThread().isInterrupted()) {
                 return false;
             }
-            if (containsAdbFailure(failure)) {
-                sleepTask(200L * failedAttempt);
-                return failedAttempt < 3;
-            }
-            sleepTask(200L * failedAttempt);
-            return true;
+            return !containsAdbFailure(failure) || failedAttempt < 3;
         }
 
         private boolean containsAdbFailure(Throwable failure) {
@@ -1859,38 +1739,6 @@ private final class LiveBearSessionDriver implements BearSessionCoordinator.Driv
             };
         }
 
-        private boolean bearAnchorIsFresh() {
-            return bearArrivalProofExpiresAt != null && now().isBefore(bearArrivalProofExpiresAt);
-        }
-
-        private ImageSearchResultData findFresh(TemplatesEnum template, int threshold, long timeoutMs) {
-            long deadline = System.nanoTime() + Duration.ofMillis(timeoutMs).toNanos();
-            while (System.nanoTime() < deadline) {
-                checkPreemption();
-                BearFrameStream.Snapshot<RawImageData> snapshot = frames.nextUnclassified();
-                ImageSearchResultData result = emuManager.locatePattern(
-                        EMULATOR_NUMBER, snapshot.frame(), template, threshold);
-                if (result.isFound()) {
-                    lastMatchFrame = snapshot;
-                    return result;
-                }
-                sleepTask(50);
-            }
-            return ImageSearchResultData.miss();
-        }
-
-        private void tapFresh(ImageSearchResultData match, String operation) {
-            if (!match.isFound()
-                    || !frames.isFresh(lastMatchFrame, Duration.ofSeconds(2))) {
-                throw protectedFailure(
-                        BearSessionExecutionException.FailureKind.VISUAL_UNKNOWN,
-                        BearSessionExecutionException.RecoveryDirective.DEGRADED_WAIT,
-                        operation + "-stale-authorization",
-                        null);
-            }
-            tapInside(match);
-            lastMatchFrame = null;
-        }
     }
 
 private void cleanupFlow(boolean requeueNormalTasks) {

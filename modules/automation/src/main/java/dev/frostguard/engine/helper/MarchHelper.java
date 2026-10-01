@@ -148,6 +148,11 @@ public class MarchHelper {
         return readVisibleMarchQueueSnapshot().slots();
     }
 
+    /** Reads the already-open Wilderness panel exclusively from the caller's frame. */
+    public MarchQueueSnapshot readVisibleMarchQueueSnapshot(RawImageData frame) {
+        return readVisibleMarchQueueOnce(frame);
+    }
+
     private MarchQueueSnapshot readVisibleMarchQueueSnapshot() {
         MarchQueueSnapshot snapshot = readVisibleMarchQueueOnce();
         if (hasReliableQueueEvidence(snapshot.slots())) {
@@ -166,8 +171,11 @@ public class MarchHelper {
     }
 
     private MarchQueueSnapshot readVisibleMarchQueueOnce() {
+        return readVisibleMarchQueueOnce(frameSource.get());
+    }
+
+    private MarchQueueSnapshot readVisibleMarchQueueOnce(RawImageData frame) {
         try {
-            RawImageData frame = frameSource.get();
             BufferedImage image = dev.frostguard.vision.convert.ImageConverter.toBufferedImage(frame);
 
             List<MarchSlotState> slots = new ArrayList<>(SLOT_COUNT);

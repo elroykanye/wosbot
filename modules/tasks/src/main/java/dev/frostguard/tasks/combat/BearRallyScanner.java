@@ -4,6 +4,7 @@ import dev.frostguard.api.configs.TemplatesEnum;
 import dev.frostguard.api.domain.AreaData;
 import dev.frostguard.api.domain.ImageSearchResultData;
 import dev.frostguard.api.domain.PointData;
+import dev.frostguard.api.domain.RawImageData;
 import dev.frostguard.engine.helper.TemplateSearchHelper;
 import dev.frostguard.engine.nav.CommonGameAreas;
 import dev.frostguard.engine.nav.CommonOCRSettings;
@@ -16,6 +17,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.awt.image.BufferedImage;
 
 /** Parses visible Bear rally cards from one immutable frame. */
 final class BearRallyScanner {
@@ -40,9 +42,17 @@ final class BearRallyScanner {
     private final Supplier<List<ImageSearchResultData>> greenButtons;
     private final Supplier<List<ImageSearchResultData>> bearIcons;
     private final TextExtractor text;
+    private final BufferedImage identityImage;
 
     BearRallyScanner(TemplateSearchHelper search) {
-        TemplateSearchHelper.Frame frame = search.captureFrame();
+        this(search, search.captureFrame());
+    }
+
+    BearRallyScanner(TemplateSearchHelper search, RawImageData raw) {
+        this(search, search.frame(raw));
+    }
+
+    private BearRallyScanner(TemplateSearchHelper search, TemplateSearchHelper.Frame frame) {
         this.greenButtons = () -> frame.locateAllPatterns(
                 TemplatesEnum.BEAR_JOIN_PLUS_ICON, search(80));
         this.bearIcons = () -> frame.locateAllPatterns(
@@ -59,6 +69,7 @@ final class BearRallyScanner {
                 return null;
             }
         };
+        this.identityImage = frame.bufferedImage();
     }
 
     BearRallyScanner(
@@ -68,6 +79,7 @@ final class BearRallyScanner {
         this.greenButtons = greenButtons;
         this.bearIcons = bearIcons;
         this.text = text;
+        this.identityImage = null;
     }
 
     List<BearRallyCandidate> scanCandidates(Instant observedAt) {
@@ -126,10 +138,28 @@ final class BearRallyScanner {
         BearRallyCandidate candidate = new BearRallyCandidate(
                 buttonArea, rowY, true, BearRallyCandidate.JoinButton.GREEN,
                 (int) members[0], (int) members[1], troops[0], troops[1],
-                countdown, observedAt);
+                countdown, observedAt, visualIdentity(anchorY));
         return new ParseResult(
                 candidate.accepts(0) ? Optional.of(candidate) : Optional.empty(),
                 false);
+    }
+
+    private long visualIdentity(int anchorY) {
+        if (identityImage == null) {
+            return 0L;
+        }
+        int left = 12;
+        int right = Math.min(identityImage.getWidth() - 1, 190);
+        int top = Math.max(0, anchorY - 6);
+        int bottom = Math.min(identityImage.getHeight() - 1, anchorY + 74);
+        long hash = 0xcbf29ce484222325L;
+        for (int y = top; y <= bottom; y += 4) {
+            for (int x = left; x <= right; x += 4) {
+                hash ^= identityImage.getRGB(x, y) & 0x00ffffffL;
+                hash *= 0x100000001b3L;
+            }
+        }
+        return hash;
     }
 
     private String read(int anchorY, int x1, int x2, int dy1, int dy2) {

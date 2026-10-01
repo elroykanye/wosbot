@@ -95,7 +95,8 @@ class BearFrameStreamTest {
                 (failure, attempt) -> false,
                 1,
                 clock);
-        BearVerifiedActionExecutor<String> executor = new BearVerifiedActionExecutor<>(stream, 1);
+        BearVerifiedActionExecutor<String> executor =
+                new BearVerifiedActionExecutor<>(stream, Duration.ofMillis(100));
         BearFrameStream.Snapshot<String> stale = new BearFrameStream.Snapshot<>(
                 1,
                 now.minusSeconds(3),
@@ -136,18 +137,19 @@ class BearFrameStreamTest {
     void interruptedPostconditionPollCannotCauseASecondTap() {
         AtomicBoolean interrupted = new AtomicBoolean();
         AtomicInteger taps = new AtomicInteger();
+        AtomicInteger captures = new AtomicInteger();
         BearFrameStream<BearNavigationPolicy.Screen> stream = new BearFrameStream<>(
                 () -> {
-                    interrupted.set(true);
+                    if (captures.incrementAndGet() > 1) {
+                        interrupted.set(true);
+                    }
                     return BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY;
                 },
                 screen -> screen,
                 interrupted::get);
-        BearFrameStream.Snapshot<BearNavigationPolicy.Screen> source = new BearFrameStream.Snapshot<>(
-                1, Instant.now(), BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY,
-                BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY);
+        BearFrameStream.Snapshot<BearNavigationPolicy.Screen> source = stream.next();
         BearVerifiedActionExecutor<BearNavigationPolicy.Screen> executor =
-                new BearVerifiedActionExecutor<>(stream, 2);
+                new BearVerifiedActionExecutor<>(stream, Duration.ofMillis(200));
 
         BearVerifiedActionExecutor.Outcome outcome = executor.tapWithOneVerifiedRetry(
                 source,
@@ -160,8 +162,9 @@ class BearFrameStreamTest {
     }
 
     @Test
-    void secondTapRequiresLaterFrameProofThatTheSameTargetIsStillPresent() {
+    void laterDestinationWithinDeadlineDoesNotCauseASecondTap() {
         Deque<BearNavigationPolicy.Screen> frames = new ArrayDeque<>();
+        frames.add(BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY);
         frames.add(BearNavigationPolicy.Screen.TRANSITIONING);
         frames.add(BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY);
         frames.add(BearNavigationPolicy.Screen.WORLD_AT_BEAR);
@@ -170,11 +173,9 @@ class BearFrameStreamTest {
                 frames::removeFirst,
                 screen -> screen,
                 () -> false);
-        BearFrameStream.Snapshot<BearNavigationPolicy.Screen> source = new BearFrameStream.Snapshot<>(
-                1, Instant.now(), BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY,
-                BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY);
+        BearFrameStream.Snapshot<BearNavigationPolicy.Screen> source = stream.next();
         BearVerifiedActionExecutor<BearNavigationPolicy.Screen> executor =
-                new BearVerifiedActionExecutor<>(stream, 2);
+                new BearVerifiedActionExecutor<>(stream, Duration.ofMillis(200));
 
         BearVerifiedActionExecutor.Outcome outcome = executor.tapWithOneVerifiedRetry(
                 source,
@@ -183,6 +184,28 @@ class BearFrameStreamTest {
                 frame -> frame.screen() == BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY);
 
         assertEquals(BearVerifiedActionExecutor.Outcome.CONFIRMED, outcome);
-        assertEquals(2, taps.get());
+        assertEquals(1, taps.get());
+    }
+
+    @Test
+    void supersededButYoungFrameCannotAuthorizeATap() {
+        AtomicInteger taps = new AtomicInteger();
+        BearFrameStream<BearNavigationPolicy.Screen> stream = new BearFrameStream<>(
+                () -> BearNavigationPolicy.Screen.WORLD_ACTIVE_BEAR_ICON_READY,
+                screen -> screen,
+                () -> false);
+        BearFrameStream.Snapshot<BearNavigationPolicy.Screen> superseded = stream.next();
+        stream.next();
+        BearVerifiedActionExecutor<BearNavigationPolicy.Screen> executor =
+                new BearVerifiedActionExecutor<>(stream, Duration.ofMillis(100));
+
+        BearVerifiedActionExecutor.Outcome outcome = executor.tapWithOneVerifiedRetry(
+                superseded,
+                taps::incrementAndGet,
+                frame -> frame.screen() == BearNavigationPolicy.Screen.WORLD_AT_BEAR,
+                frame -> true);
+
+        assertEquals(BearVerifiedActionExecutor.Outcome.STALE_AUTHORIZATION, outcome);
+        assertEquals(0, taps.get());
     }
 }

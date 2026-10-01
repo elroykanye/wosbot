@@ -6,7 +6,7 @@ import dev.frostguard.vision.color.GameColors;
 import java.awt.image.BufferedImage;
 
 /** Verifies the yellow outline the game draws around the active formation tile. */
-final class FormationSelectionVerifier {
+public final class FormationSelectionVerifier {
 
     // Live 720x1280 frames contain roughly 875-1,025 yellow pixels in a selected tile. The largest
     // incidental yellow/orange badge in the same strip measured 312 pixels.
@@ -15,7 +15,7 @@ final class FormationSelectionVerifier {
     private FormationSelectionVerifier() {
     }
 
-    static boolean isSelected(BufferedImage frame, AreaData slot) {
+    public static boolean isSelected(BufferedImage frame, AreaData slot) {
         int left = Math.max(0, slot.topLeft().getX());
         int top = Math.max(0, slot.topLeft().getY());
         int right = Math.min(frame.getWidth() - 1, slot.bottomRight().getX());

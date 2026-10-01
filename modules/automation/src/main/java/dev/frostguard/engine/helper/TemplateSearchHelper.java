@@ -76,6 +76,12 @@ public class TemplateSearchHelper {
         return new Frame(image);
     }
 
+    /** Wraps a caller-owned immutable capture; no device capture occurs. */
+    public Frame frame(RawImageData image) {
+        preemptionHook.run();
+        return new Frame(Objects.requireNonNull(image, "image"));
+    }
+
     /**
      * A profile-bound screen observation. Searches and OCR on this object never capture again;
      * callers obtain a new frame after every UI input or expected state transition.
@@ -112,7 +118,7 @@ public class TemplateSearchHelper {
                     : OcrEngine.recognizeText(image, topLeft, bottomRight, config);
         }
 
-        BufferedImage bufferedImage() {
+        public BufferedImage bufferedImage() {
             return ImageConverter.toBufferedImage(image);
         }
     }

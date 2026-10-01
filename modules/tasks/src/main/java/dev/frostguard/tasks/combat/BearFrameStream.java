@@ -23,6 +23,14 @@ final class BearFrameStream<T> {
         boolean isFresh(Clock clock, Duration maximumAge) {
             return !capturedAt.plus(maximumAge).isBefore(clock.instant());
         }
+
+        Duration age(Clock clock) {
+            Duration age = Duration.between(capturedAt, clock.instant());
+            return age.isNegative() ? Duration.ZERO : age;
+        }
+    }
+
+    record AwaitResult<T>(Optional<Snapshot<T>> match, Snapshot<T> lastObserved) {
     }
 
     @FunctionalInterface
@@ -37,6 +45,7 @@ final class BearFrameStream<T> {
     private final int captureAttempts;
     private final Clock clock;
     private long sequence;
+    private Snapshot<T> latest;
 
     BearFrameStream(
             Supplier<T> source,
@@ -65,27 +74,38 @@ final class BearFrameStream<T> {
 
     Snapshot<T> next() {
         T frame = capture();
-        return new Snapshot<>(++sequence, clock.instant(), frame, classifier.apply(frame));
+        latest = new Snapshot<>(++sequence, clock.instant(), frame, classifier.apply(frame));
+        return latest;
     }
 
     Snapshot<T> nextUnclassified() {
         T frame = capture();
-        return new Snapshot<>(++sequence, clock.instant(), frame, BearNavigationPolicy.Screen.UNKNOWN);
+        latest = new Snapshot<>(++sequence, clock.instant(), frame, BearNavigationPolicy.Screen.UNKNOWN);
+        return latest;
     }
 
     Optional<Snapshot<T>> awaitAfter(
             long earlierSequence,
             Duration timeout,
             Predicate<Snapshot<T>> predicate) {
+        return awaitAfterResult(earlierSequence, timeout, predicate).match();
+    }
+
+    AwaitResult<T> awaitAfterResult(
+            long earlierSequence,
+            Duration timeout,
+            Predicate<Snapshot<T>> predicate) {
         long deadline = System.nanoTime() + timeout.toNanos();
+        Snapshot<T> lastObserved = null;
         while (System.nanoTime() < deadline && !interrupted.getAsBoolean()) {
             Snapshot<T> frame = next();
+            lastObserved = frame;
             if (frame.sequence() > earlierSequence && predicate.test(frame)) {
-                return Optional.of(frame);
+                return new AwaitResult<>(Optional.of(frame), frame);
             }
             pauseBetweenCaptures();
         }
-        return Optional.empty();
+        return new AwaitResult<>(Optional.empty(), lastObserved);
     }
 
     boolean interrupted() {
@@ -94,6 +114,24 @@ final class BearFrameStream<T> {
 
     boolean isFresh(Snapshot<T> snapshot, Duration maximumAge) {
         return snapshot != null && snapshot.isFresh(clock, maximumAge);
+    }
+
+    boolean isCurrent(Snapshot<T> snapshot, Duration maximumAge) {
+        return snapshot != null
+                && snapshot.sequence() == sequence
+                && snapshot.isFresh(clock, maximumAge);
+    }
+
+    Duration age(Snapshot<T> snapshot) {
+        return snapshot == null ? Duration.ZERO : snapshot.age(clock);
+    }
+
+    long latestSequence() {
+        return sequence;
+    }
+
+    Snapshot<T> latest() {
+        return latest;
     }
 
     private T capture() {
