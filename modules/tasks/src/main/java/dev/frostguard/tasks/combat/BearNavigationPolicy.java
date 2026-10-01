@@ -17,14 +17,26 @@ final class BearNavigationPolicy {
         WORLD_AT_VERIFIED_BEAR,
         WORLD_AT_BEAR,
         WORLD_ACTIVE_BEAR_ICON_READY,
+        WORLD_OBSTRUCTED,
         WORLD,
         BEAR_RALLY_PANEL,
         RALLY_TIMER_PANEL,
         FORMATION,
+        DEPLOY_CONFIRMATION,
+        MARCH_QUEUE_FULL,
         WAR_LIST,
+        SIDEBAR_OTHER,
+        MARCH_SIDEBAR,
+        RECALL_CONFIRMATION,
         ALLIANCE_MENU,
+        ALLIANCE_WAR,
+        AUTOJOIN_PANEL,
         ALLIANCE_TERRITORY,
         SPECIAL_BUILDINGS,
+        PETS_OVERVIEW,
+        PET_RAZORBACK,
+        PET_QUICK_USE,
+        PET_CONFIRMATION,
         RECONNECT,
         APP_LOADING,
         TRANSITIONING,
@@ -91,9 +103,12 @@ final class BearNavigationPolicy {
                 case BEAR_RALLY_PANEL -> Action.READY;
                 case WORLD_AT_VERIFIED_BEAR, WORLD_AT_BEAR -> Action.TAP_BEAR_ANCHOR;
                 case WORLD -> Action.ROUTE_TO_BEAR;
-                case RALLY_TIMER_PANEL, FORMATION, WAR_LIST -> Action.BACK_ONCE;
+                case RALLY_TIMER_PANEL, FORMATION, DEPLOY_CONFIRMATION, MARCH_QUEUE_FULL,
+                        WAR_LIST, SIDEBAR_OTHER, MARCH_SIDEBAR, RECALL_CONFIRMATION -> Action.BACK_ONCE;
                 case WORLD_ACTIVE_BEAR_ICON_READY, ALLIANCE_MENU, ALLIANCE_TERRITORY,
-                        SPECIAL_BUILDINGS, RECONNECT, APP_LOADING, TRANSITIONING, UNKNOWN ->
+                        ALLIANCE_WAR, AUTOJOIN_PANEL, SPECIAL_BUILDINGS, PETS_OVERVIEW,
+                        PET_RAZORBACK, PET_QUICK_USE, PET_CONFIRMATION, WORLD_OBSTRUCTED,
+                        RECONNECT, APP_LOADING, TRANSITIONING, UNKNOWN ->
                         Action.FAIL_CLOSED;
             };
         }
@@ -101,8 +116,12 @@ final class BearNavigationPolicy {
             return switch (screen) {
                 case WORLD_AT_VERIFIED_BEAR, WORLD_AT_BEAR, WORLD_ACTIVE_BEAR_ICON_READY,
                         WORLD -> Action.TAP_WAR;
-                case WAR_LIST, FORMATION, RALLY_TIMER_PANEL, BEAR_RALLY_PANEL -> Action.BACK_ONCE;
-                case ALLIANCE_MENU, ALLIANCE_TERRITORY, SPECIAL_BUILDINGS,
+                case WAR_LIST, FORMATION, DEPLOY_CONFIRMATION, MARCH_QUEUE_FULL,
+                        SIDEBAR_OTHER, MARCH_SIDEBAR, RECALL_CONFIRMATION, RALLY_TIMER_PANEL,
+                        BEAR_RALLY_PANEL -> Action.BACK_ONCE;
+                case ALLIANCE_MENU, ALLIANCE_WAR, AUTOJOIN_PANEL, ALLIANCE_TERRITORY,
+                        SPECIAL_BUILDINGS, PETS_OVERVIEW, PET_RAZORBACK, PET_QUICK_USE,
+                        PET_CONFIRMATION, WORLD_OBSTRUCTED,
                         RECONNECT, APP_LOADING, TRANSITIONING, UNKNOWN -> Action.FAIL_CLOSED;
             };
         }
@@ -113,16 +132,22 @@ final class BearNavigationPolicy {
                 case WAR_LIST -> Action.BACK_ONCE;
                 case APP_LOADING, TRANSITIONING, UNKNOWN -> Action.WAIT_FOR_FRAME;
                 case RECONNECT -> Action.FAIL_CLOSED;
-                case BEAR_RALLY_PANEL, RALLY_TIMER_PANEL, FORMATION, ALLIANCE_MENU,
-                        ALLIANCE_TERRITORY, SPECIAL_BUILDINGS -> Action.FAIL_CLOSED;
+                case BEAR_RALLY_PANEL, RALLY_TIMER_PANEL, FORMATION, DEPLOY_CONFIRMATION,
+                        MARCH_QUEUE_FULL, SIDEBAR_OTHER, MARCH_SIDEBAR, RECALL_CONFIRMATION, ALLIANCE_MENU,
+                        ALLIANCE_WAR, AUTOJOIN_PANEL, ALLIANCE_TERRITORY, SPECIAL_BUILDINGS,
+                        PETS_OVERVIEW, PET_RAZORBACK, PET_QUICK_USE, PET_CONFIRMATION,
+                        WORLD_OBSTRUCTED -> Action.FAIL_CLOSED;
             };
         }
         return switch (screen) {
             case WAR_LIST -> Action.READY;
             case WORLD_AT_VERIFIED_BEAR, WORLD_AT_BEAR, WORLD_ACTIVE_BEAR_ICON_READY,
                     WORLD -> Action.TAP_WAR;
-            case FORMATION, RALLY_TIMER_PANEL, BEAR_RALLY_PANEL -> Action.BACK_ONCE;
-            case ALLIANCE_MENU, ALLIANCE_TERRITORY, SPECIAL_BUILDINGS,
+            case FORMATION, DEPLOY_CONFIRMATION, MARCH_QUEUE_FULL, SIDEBAR_OTHER, MARCH_SIDEBAR,
+                    RECALL_CONFIRMATION, RALLY_TIMER_PANEL, BEAR_RALLY_PANEL -> Action.BACK_ONCE;
+            case ALLIANCE_MENU, ALLIANCE_WAR, AUTOJOIN_PANEL, ALLIANCE_TERRITORY,
+                    SPECIAL_BUILDINGS, PETS_OVERVIEW, PET_RAZORBACK, PET_QUICK_USE,
+                    PET_CONFIRMATION, WORLD_OBSTRUCTED,
                     RECONNECT, APP_LOADING, TRANSITIONING, UNKNOWN -> Action.FAIL_CLOSED;
         };
     }
@@ -154,7 +179,8 @@ final class BearNavigationPolicy {
                 case WORLD_ACTIVE_BEAR_ICON_READY -> phase == Phase.ACTIVE
                         ? Action.TAP_ACTIVE_BEAR_ICON
                         : Action.FAIL_CLOSED;
-                case RALLY_TIMER_PANEL, FORMATION, WAR_LIST -> Action.BACK_ONCE;
+                case RALLY_TIMER_PANEL, FORMATION, DEPLOY_CONFIRMATION, MARCH_QUEUE_FULL,
+                        WAR_LIST, SIDEBAR_OTHER, MARCH_SIDEBAR, RECALL_CONFIRMATION -> Action.BACK_ONCE;
                 default -> Action.FAIL_CLOSED;
             };
         }

@@ -17,7 +17,8 @@ record BearRallyCandidate(
         long currentTroops,
         long maxTroops,
         Duration countdown,
-        Instant observedAt) {
+        Instant observedAt,
+        long visualIdentity) {
 
     /** Leaves enough time to open formation, verify the saved flag, and win the deploy race. */
     static final Duration MIN_SAFE_DEPLOY_COUNTDOWN = Duration.ofSeconds(30);
@@ -28,6 +29,21 @@ record BearRallyCandidate(
         Objects.requireNonNull(joinButton, "joinButton");
         Objects.requireNonNull(countdown, "countdown");
         Objects.requireNonNull(observedAt, "observedAt");
+    }
+
+    BearRallyCandidate(
+            AreaData joinButtonArea,
+            int rowY,
+            boolean bearTarget,
+            JoinButton joinButton,
+            int currentMembers,
+            int maxMembers,
+            long currentTroops,
+            long maxTroops,
+            Duration countdown,
+            Instant observedAt) {
+        this(joinButtonArea, rowY, bearTarget, joinButton, currentMembers, maxMembers,
+                currentTroops, maxTroops, countdown, observedAt, 0L);
     }
 
     long remainingCapacity() {
@@ -67,6 +83,7 @@ record BearRallyCandidate(
         }
         // Current members/troops are intentionally excluded: both change while the same rally is
         // filling and must not make a just-rejected rally look new on the next scan.
-        return "row=" + rowY + ":" + maxMembers + ":" + maxTroops + ":" + completionBucket;
+        return "row=" + rowY + ":" + maxMembers + ":" + maxTroops + ":"
+                + completionBucket + ":visual=" + Long.toUnsignedString(visualIdentity, 16);
     }
 }

@@ -108,7 +108,19 @@ public class DeploymentHelper {
      * Reads every safety and numeric signal needed immediately before tapping Deploy from one frame.
      */
     public DeploymentPreflightRead readPreflightScreen(int maxPlausibleStaminaCost) {
-        TemplateSearchHelper.Frame frame = templates.captureFrame();
+        return readPreflightScreen(templates.captureFrame(), maxPlausibleStaminaCost);
+    }
+
+    /** Reads preflight evidence exclusively from the caller's frame. */
+    public DeploymentPreflightRead readPreflightScreen(
+            RawImageData raw,
+            int maxPlausibleStaminaCost) {
+        return readPreflightScreen(templates.frame(raw), maxPlausibleStaminaCost);
+    }
+
+    private DeploymentPreflightRead readPreflightScreen(
+            TemplateSearchHelper.Frame frame,
+            int maxPlausibleStaminaCost) {
         DeploymentScreenRead deployment = readScreen(
                 maxPlausibleStaminaCost,
                 new ResilientOcrExecutor<>(frame),
@@ -122,7 +134,15 @@ public class DeploymentHelper {
 
     /** Reads all known outcomes after tapping Deploy from one fresh frame. */
     public DeploymentPostTapRead readPostTapScreen() {
-        TemplateSearchHelper.Frame frame = templates.captureFrame();
+        return readPostTapScreen(templates.captureFrame());
+    }
+
+    /** Reads all post-tap outcomes exclusively from the caller's frame. */
+    public DeploymentPostTapRead readPostTapScreen(RawImageData raw) {
+        return readPostTapScreen(templates.frame(raw));
+    }
+
+    private DeploymentPostTapRead readPostTapScreen(TemplateSearchHelper.Frame frame) {
         ImageSearchResultData queueFull = frame.locatePattern(
                 TemplatesEnum.RALLY_MARCH_QUEUE_FULL,
                 search(CommonGameAreas.RALLY_MARCH_QUEUE_FULL_AREA, 1, 85));
@@ -180,8 +200,16 @@ public class DeploymentHelper {
 
     /** Reads the selected saved formation's troop count from the deployment-screen fraction. */
     public long readSelectedTroopCount() {
+        return readSelectedTroopCount(templates.captureFrame());
+    }
+
+    /** Reads the selected troop count exclusively from the caller's frame. */
+    public long readSelectedTroopCount(RawImageData raw) {
+        return readSelectedTroopCount(templates.frame(raw));
+    }
+
+    private long readSelectedTroopCount(TemplateSearchHelper.Frame frame) {
         try {
-            TemplateSearchHelper.Frame frame = templates.captureFrame();
             String text = frame.extractText(
                     CommonOCRSettings.RALLY_TROOP_COUNT_SETTINGS,
                     CommonGameAreas.RALLY_SELECTED_TROOPS_OCR_AREA.topLeft(),
@@ -295,7 +323,7 @@ public class DeploymentHelper {
                 image, CommonGameAreas.RALLY_SET_TIME_MINUTES, CommonGameAreas.RALLY_SET_TIME_CHECKBOXES);
     }
 
-    static int selectedBearRallySetTimeMinutes(BufferedImage image) {
+    public static int selectedBearRallySetTimeMinutes(BufferedImage image) {
         return selectedRallySetTimeMinutes(
                 image,
                 CommonGameAreas.BEAR_RALLY_SET_TIME_MINUTES,
