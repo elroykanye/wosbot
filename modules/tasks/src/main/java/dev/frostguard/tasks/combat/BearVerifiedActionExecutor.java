@@ -6,7 +6,12 @@ import java.util.function.Predicate;
 
 final class BearVerifiedActionExecutor<T> {
 
-    private static final Duration MAXIMUM_AUTHORIZING_FRAME_AGE = Duration.ofSeconds(2);
+    // A live 720x1280 Bear classification currently takes about 2-3 seconds because it performs
+    // several template searches against the same captured frame.  The old two-second limit made
+    // a newly classified frame stale before the action boundary could consume it.  Five seconds
+    // remains bounded while allowing the classifier's measured runtime; sequence equality still
+    // prevents a superseded observation from authorizing input.
+    static final Duration MAXIMUM_AUTHORIZING_FRAME_AGE = Duration.ofSeconds(5);
 
     enum Outcome {
         CONFIRMED,
