@@ -109,16 +109,6 @@ class BearRallyCandidateSelectorTest {
     }
 
     @Test
-    void reauthorizationRejectsSameSizedSameDeadlineRowReplacementByVisualIdentity() {
-        BearRallyCandidate selected = candidateWithIdentity(300, 3, 100_000, 120, 0x1111L);
-        BearRallyCandidate replacement = candidateWithIdentity(300, 3, 100_000, 120, 0x2222L);
-
-        assertTrue(BearRallyCandidateSelector.reauthorize(
-                selected, List.of(replacement), 80_000, OBSERVED.plusSeconds(1),
-                Duration.ofSeconds(2)).isEmpty());
-    }
-
-    @Test
     void reauthorizationAcceptsTheSameFreshRallyAfterOccupancyChanges() {
         BearRallyCandidate selected = candidate(300, true, BearRallyCandidate.JoinButton.GREEN,
                 3, 15, 100_000, 500_000, 120);
@@ -158,14 +148,5 @@ class BearRallyCandidateSelectorTest {
                 AreaData.of(580, y, 690, y + 50), y, bear, button,
                 members, maxMembers, troops, capacity,
                 Duration.ofSeconds(countdownSeconds), OBSERVED);
-    }
-
-    private BearRallyCandidate candidateWithIdentity(
-            int y, int members, long troops, long countdownSeconds, long identity) {
-        return new BearRallyCandidate(
-                AreaData.of(580, y, 690, y + 50), y, true,
-                BearRallyCandidate.JoinButton.GREEN,
-                members, 15, troops, 500_000,
-                Duration.ofSeconds(countdownSeconds), OBSERVED, identity);
     }
 }

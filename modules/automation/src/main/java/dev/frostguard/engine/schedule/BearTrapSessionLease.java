@@ -35,13 +35,7 @@ public final class BearTrapSessionLease {
         Optional<BearTrapParticipationSchedule.ActiveSession> activeSession =
                 BearTrapParticipationSchedule.resolveActiveSession(profile, clock);
         if (activeSession.isEmpty()) {
-            Optional<Lease> current = active(profile.getId(), clock);
-            if (current.isPresent()) {
-                return current;
-            }
-            return BearSessionCheckpoint.load(profile)
-                    .filter(checkpoint -> isAlive(checkpoint.eventEnd(), clock.instant()))
-                    .map(checkpoint -> restoreFromCheckpoint(profile, checkpoint, clock));
+            return active(profile.getId(), clock);
         }
 
         BearTrapParticipationSchedule.ActiveSession session = activeSession.get();
@@ -57,22 +51,6 @@ public final class BearTrapSessionLease {
             return candidate;
         });
         return Optional.of(acquired);
-    }
-
-    private static Lease restoreFromCheckpoint(
-            AccountDescriptor profile,
-            BearSessionCheckpoint.Checkpoint checkpoint,
-            Clock clock) {
-        Integer configuredTrap = profile.getConfig(
-                dev.frostguard.api.configs.ConfigurationKeyEnum.BEAR_TRAP_NUMBER_INT,
-                Integer.class);
-        Lease candidate = new Lease(
-                profile.getId(),
-                configuredTrap == null ? 1 : configuredTrap,
-                clock.instant(),
-                checkpoint.eventEnd());
-        return LEASES_BY_PROFILE.compute(profile.getId(), (profileId, current) ->
-                isAlive(current, clock.instant()) ? current : candidate);
     }
 
     public static Optional<Lease> active(Long profileId) {
@@ -105,11 +83,7 @@ public final class BearTrapSessionLease {
     }
 
     private static boolean isAlive(Lease lease, Instant now) {
-        return lease != null && isAlive(lease.eventEnd(), now);
-    }
-
-    private static boolean isAlive(Instant eventEnd, Instant now) {
-        return eventEnd != null && now.isBefore(eventEnd.plusSeconds(
+        return lease != null && now.isBefore(lease.eventEnd().plusSeconds(
                 BearTrapProtectionPolicy.RELEASE_BUFFER_SECONDS));
     }
 

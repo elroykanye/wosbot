@@ -15,7 +15,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -44,7 +43,6 @@ import dev.frostguard.engine.listener.BotStateListener;
 import dev.frostguard.engine.listener.QueueStateListener;
 import dev.frostguard.engine.schedule.BearTrapParticipationSchedule;
 import dev.frostguard.engine.schedule.BearRecoveryFinalization;
-import dev.frostguard.engine.schedule.BearSessionCheckpoint;
 import dev.frostguard.engine.schedule.DelayedTask;
 import dev.frostguard.engine.schedule.DelayedTaskRegistry;
 import dev.frostguard.engine.schedule.StaminaDeferral;
@@ -105,25 +103,19 @@ public class ScheduleService {
 		applyEmulatorPaths(globalConfig);
 
 		List<AccountDescriptor> accounts = ProfileService.obtain().fetchAllAccounts();
-		List<AccountDescriptor> managed = managedAccounts(accounts);
-		if (managed.isEmpty()) {
-			log(TpMessageSeverityEnum.WARNING, "ScheduleService", "-", "No enabled or recovery-pending profiles found");
+		List<AccountDescriptor> enabled = enabledAccounts(accounts);
+		if (enabled.isEmpty()) {
+			log(TpMessageSeverityEnum.WARNING, "ScheduleService", "-", "No enabled profiles found");
 			return;
 		}
 
-		managed.stream()
+		enabled.stream()
 				.sorted(Comparator.comparing(AccountDescriptor::getPriority).reversed())
-				.forEach(account -> {
-					if (Boolean.TRUE.equals(account.getEnabled())) {
-						prepareQueue(account, globalConfig);
-					} else {
-						prepareRecoveryOnlyQueue(account, globalConfig);
-					}
-				});
+				.forEach(account -> prepareQueue(account, globalConfig));
 
 		dispatcher.startAll();
 		notifyQueueState(null, false);
-		trackStart(managed, globalConfig);
+		trackStart(enabled, globalConfig);
 		notifyBotState(true, false);
 	}
 
@@ -474,49 +466,10 @@ public class ScheduleService {
 		}
 	}
 
-	private List<AccountDescriptor> managedAccounts(List<AccountDescriptor> accounts) {
+	private List<AccountDescriptor> enabledAccounts(List<AccountDescriptor> accounts) {
 		return accounts == null
 				? List.of()
-				: accounts.stream()
-						.filter(account -> Boolean.TRUE.equals(account.getEnabled())
-								|| BearRecoveryFinalization.deadline(account).isPresent()
-								|| BearSessionCheckpoint.hasMarker(account))
-						.collect(Collectors.toList());
-	}
-
-	private void prepareRecoveryOnlyQueue(AccountDescriptor account, Map<String, String> globalConfig) {
-		account.setGlobalSettings(globalConfig instanceof HashMap
-				? (HashMap<String, String>) globalConfig
-				: new HashMap<>(globalConfig == null ? Map.of() : globalConfig));
-		dispatcher.registerAccount(account);
-		TaskQueue queue = dispatcher.getQueue(account.getId());
-		Optional<Instant> deadline = BearRecoveryFinalization.deadline(account);
-		if (deadline.isEmpty()) {
-			Optional<BearSessionCheckpoint.Checkpoint> checkpoint = BearSessionCheckpoint.load(account);
-			if (checkpoint.isEmpty() && BearSessionCheckpoint.hasMarker(account)) {
-				log(TpMessageSeverityEnum.ERROR, "Bear recovery", account.getName(),
-						"Disabled-profile recovery is fail-closed because its durable checkpoint is malformed");
-				return;
-			}
-			Optional<Instant> checkpointEnd = checkpoint
-					.map(BearSessionCheckpoint.Checkpoint::eventEnd);
-			if (checkpointEnd.isPresent()
-					&& !BearRecoveryFinalization.arm(account, checkpointEnd.orElseThrow())) {
-				log(TpMessageSeverityEnum.ERROR, "Bear recovery", account.getName(),
-						"Disabled-profile recovery was not scheduled because its durable finalizer "
-								+ "could not be persisted");
-				return;
-			}
-			deadline = checkpointEnd;
-		}
-		deadline.ifPresent(value -> {
-			DelayedTask finalizer = DelayedTaskRegistry.create(TpDailyTaskEnum.BEAR_TRAP, account);
-			finalizer.reschedule(LocalDateTime.ofInstant(value, ZoneId.systemDefault()));
-			queue.enqueue(finalizer);
-			log(TpMessageSeverityEnum.INFO, finalizer.getTaskName(), account.getName(),
-					"Recovery-only queue restored for disabled profile; no emulator task will run before "
-							+ formatTime(finalizer.getScheduled()));
-		});
+				: accounts.stream().filter(account -> Boolean.TRUE.equals(account.getEnabled())).collect(Collectors.toList());
 	}
 
 	private void prepareQueue(AccountDescriptor account, Map<String, String> globalConfig) {
@@ -526,24 +479,6 @@ public class ScheduleService {
 
 		dispatcher.registerAccount(account);
 		TaskQueue queue = dispatcher.getQueue(account.getId());
-		Optional<BearSessionCheckpoint.Checkpoint> checkpoint = BearSessionCheckpoint.load(account);
-		if (checkpoint.isEmpty() && BearSessionCheckpoint.hasMarker(account)) {
-			log(TpMessageSeverityEnum.ERROR, "Bear recovery", account.getName(),
-					"Profile startup is fail-closed because its durable Bear checkpoint is malformed");
-			return;
-		}
-		if (checkpoint.isPresent() && BearRecoveryFinalization.deadline(account).isEmpty()) {
-			BearSessionCheckpoint.Checkpoint pending = checkpoint.orElseThrow();
-			boolean mayResume = Instant.now().isBefore(pending.eventEnd())
-					&& Boolean.TRUE.equals(account.getConfig(
-							ConfigurationKeyEnum.BEAR_TRAP_EVENT_BOOL, Boolean.class));
-			if (!handoffCheckpointForStartup(
-					account, pending, mayResume, BearRecoveryFinalization::arm)) {
-				log(TpMessageSeverityEnum.ERROR, "Bear recovery", account.getName(),
-						"Profile startup is fail-closed because its Bear finalizer could not be persisted");
-				return;
-			}
-		}
 		queue.enqueue(startupTaskFor(account));
 
 		List<DailyTaskStatusData> progress = safeProgress(account.getId());
@@ -571,14 +506,6 @@ public class ScheduleService {
 		addCustomTasks(account, queue, progress);
 	}
 
-	static boolean handoffCheckpointForStartup(
-			AccountDescriptor account,
-			BearSessionCheckpoint.Checkpoint checkpoint,
-			boolean mayResume,
-			BiPredicate<AccountDescriptor, Instant> finalizerWriter) {
-		return mayResume || finalizerWriter.test(account, checkpoint.eventEnd());
-	}
-
 	private DelayedTask startupTaskFor(AccountDescriptor account) {
 		if (Boolean.TRUE.equals(account.getConfig(ConfigurationKeyEnum.SKIP_TUTORIAL_ENABLED_BOOL, Boolean.class))) {
 			log(TpMessageSeverityEnum.INFO, "ScheduleService", account.getName(),
@@ -603,26 +530,9 @@ public class ScheduleService {
 		TaskStateData state = baseScheduledState(account.getId(), task.getTpTask().getId(), null);
 		DailyTaskStatusData saved = progressByType.get(task.getTpDailyTaskId());
 		boolean isBearTrap = task.getTpTask() == TpDailyTaskEnum.BEAR_TRAP;
-		Optional<BearSessionCheckpoint.Checkpoint> recoveryCheckpoint = isBearTrap
-				? BearSessionCheckpoint.load(account)
-				: Optional.empty();
 		Optional<Instant> recoveryFinalizer = isBearTrap
 				? BearRecoveryFinalization.deadline(account)
 				: Optional.empty();
-		if (recoveryCheckpoint.isPresent()
-				&& recoveryFinalizer.isEmpty()
-				&& Instant.now().isBefore(recoveryCheckpoint.orElseThrow().eventEnd())) {
-			LocalDateTime resumeAt = LocalDateTime.now();
-			task.reschedule(resumeAt);
-			state.setNextExecutionTime(resumeAt);
-			persistNextSchedule(account, TpDailyTaskEnum.BEAR_TRAP, resumeAt, null);
-			TaskManagementService.shared().recordTaskState(account.getId(), state);
-			queue.enqueue(task);
-			log(TpMessageSeverityEnum.INFO, task.getTaskName(), account.getName(),
-					"Durable Bear session checkpoint restored for immediate bounded recovery from "
-							+ recoveryCheckpoint.orElseThrow().state());
-			return;
-		}
 		if (recoveryFinalizer.isPresent()) {
 			LocalDateTime deadline = LocalDateTime.ofInstant(
 					recoveryFinalizer.orElseThrow(), ZoneId.systemDefault());

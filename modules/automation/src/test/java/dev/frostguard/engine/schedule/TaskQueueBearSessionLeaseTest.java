@@ -159,45 +159,6 @@ class TaskQueueBearSessionLeaseTest {
     }
 
     @Test
-    void alternatingRecoveryDirectivesShareOneDurableBudgetAcrossRestart() {
-        AccountDescriptor profile = configuredActiveProfile("Bear alternating durable budget ");
-        RecordingBearTask firstTask = new RecordingBearTask(profile);
-        RecordingQueue firstQueue = new RecordingQueue(profile);
-        BearTrapSessionLease.Lease lease =
-                BearTrapSessionLease.acquireForBearExecution(profile).orElseThrow();
-
-        firstQueue.routeError(firstTask, failure(
-                BearSessionExecutionException.FailureKind.DEVICE_OFFLINE,
-                BearSessionExecutionException.RecoveryDirective.REBIND_DEVICE));
-        firstQueue.routeError(firstTask, failure(
-                BearSessionExecutionException.FailureKind.RECONNECT_SCREEN,
-                BearSessionExecutionException.RecoveryDirective.RESTART_APP));
-        assertEquals(2, BearSessionCheckpoint.load(profile).orElseThrow().recoveryAttempts());
-
-        BearTrapSessionLease.releaseForQueueStop(profile.getId());
-        AccountDescriptor reloaded = reload(profile.getId());
-        assertEquals(lease.eventEnd(),
-                BearTrapSessionLease.acquireForBearExecution(reloaded).orElseThrow().eventEnd());
-        RecordingQueue restartedQueue = new RecordingQueue(reloaded);
-        RecordingBearTask restartedTask = new RecordingBearTask(reloaded);
-
-        restartedQueue.routeError(restartedTask, failure(
-                BearSessionExecutionException.FailureKind.DEVICE_OFFLINE,
-                BearSessionExecutionException.RecoveryDirective.REBIND_DEVICE));
-        restartedQueue.routeError(restartedTask, failure(
-                BearSessionExecutionException.FailureKind.RECONNECT_SCREEN,
-                BearSessionExecutionException.RecoveryDirective.RESTART_APP));
-        restartedQueue.routeError(restartedTask, failure(
-                BearSessionExecutionException.FailureKind.CAPTURE_TRANSIENT,
-                BearSessionExecutionException.RecoveryDirective.DEGRADED_WAIT));
-
-        assertEquals(1, restartedQueue.deviceProbes);
-        assertEquals(1, restartedQueue.appRestarts);
-        assertEquals(4, BearSessionCheckpoint.load(reloaded).orElseThrow().recoveryAttempts());
-        assertEquals(lease.eventEnd(), BearRecoveryFinalization.deadline(reloaded).orElseThrow());
-    }
-
-    @Test
     void durableFinalizerSurvivesQueueReconstructionAndRunsExactlyOnce() {
         AccountDescriptor profile = configuredActiveProfile("Bear durable finalizer ");
         RecordingQueue originalQueue = new RecordingQueue(profile);
@@ -224,7 +185,7 @@ class TaskQueueBearSessionLeaseTest {
     }
 
     @Test
-    void manualRunNowPreservesFinalizerUntilActiveExecutionOwnsDurableCheckpoint() {
+    void manualResumeCancelsOldFinalizerBeforeSuccessfulBearExecution() {
         AccountDescriptor profile = configuredActiveProfile("Bear manual resume ");
         RecordingQueue queue = new RecordingQueue(profile);
         RecordingBearTask failedTask = new RecordingBearTask(profile);
@@ -234,10 +195,8 @@ class TaskQueueBearSessionLeaseTest {
                 BearSessionExecutionException.FailureKind.FATAL_CONFIGURATION,
                 BearSessionExecutionException.RecoveryDirective.OPERATOR_ACTION));
 
-        queue.runNow(TpDailyTaskEnum.BEAR_TRAP, true);
-        assertTrue(queue.getNextQueuedTaskTypes(20).contains(TpDailyTaskEnum.BEAR_TRAP));
-        assertTrue(BearRecoveryFinalization.deadline(profile).isPresent(),
-                "Run Now must not clear recovery before execution owns a checkpoint");
+        assertTrue(queue.cancelPendingBearFinalizationForManualResume());
+        assertTrue(BearRecoveryFinalization.deadline(profile).isEmpty());
 
         ReschedulingSuccessfulBearTask resumed = new ReschedulingSuccessfulBearTask(profile);
         assertTrue(queue.executeTask(resumed));
@@ -245,25 +204,6 @@ class TaskQueueBearSessionLeaseTest {
         assertTrue(BearRecoveryFinalization.deadline(profile).isEmpty());
         assertFalse(queue.finalizeBearRecoveryIfDue(
                 resumed, lease.eventEnd().plus(Duration.ofDays(2))));
-    }
-
-    @Test
-    void manualRunNowOutsideActiveWindowIsRefusedAndPreservesFinalizer() {
-        AccountDescriptor profile = configuredActiveProfile("Bear refused manual resume ");
-        RecordingQueue queue = new RecordingQueue(profile);
-        RecordingBearTask failedTask = new RecordingBearTask(profile);
-        BearTrapSessionLease.Lease lease =
-                BearTrapSessionLease.acquireForBearExecution(profile).orElseThrow();
-        queue.routeError(failedTask, failure(
-                BearSessionExecutionException.FailureKind.FATAL_CONFIGURATION,
-                BearSessionExecutionException.RecoveryDirective.OPERATOR_ACTION));
-        assertTrue(ConfigService.obtain().writeAccountSetting(
-                profile, BEAR_TRAP_SCHEDULE_DATETIME_STRING, "01-01-2035 00:00"));
-
-        queue.runNow(TpDailyTaskEnum.BEAR_TRAP, true);
-
-        assertFalse(queue.getNextQueuedTaskTypes(20).contains(TpDailyTaskEnum.BEAR_TRAP));
-        assertEquals(lease.eventEnd(), BearRecoveryFinalization.deadline(profile).orElseThrow());
     }
 
     @Test
@@ -307,40 +247,6 @@ class TaskQueueBearSessionLeaseTest {
                 "re-enabling must expose a schedulable Bear plan to queue realignment");
     }
 
-    @Test
-    void disabledProfilePerformsCleanupOnlyWithoutRestoringNormalTasksOrBear() {
-        AccountDescriptor profile = configuredActiveProfile("Bear disabled profile ");
-        RecordingQueue queue = new RecordingQueue(profile);
-        RecordingBearTask task = new RecordingBearTask(profile);
-        BearTrapSessionLease.Lease lease =
-                BearTrapSessionLease.acquireForBearExecution(profile).orElseThrow();
-        queue.routeError(task, failure(
-                BearSessionExecutionException.FailureKind.FATAL_CONFIGURATION,
-                BearSessionExecutionException.RecoveryDirective.OPERATOR_ACTION));
-        profile.setEnabled(false);
-
-        assertTrue(queue.finalizeBearRecoveryIfDue(task, lease.eventEnd().plusSeconds(1)));
-        assertEquals(0, queue.gatherRestores);
-        assertEquals(0, queue.autojoinRestores);
-        assertFalse(task.isRecurring());
-        assertFalse(queue.getNextQueuedTaskTypes(20).contains(TpDailyTaskEnum.BEAR_TRAP));
-    }
-
-    @Test
-    void durableCheckpointRestoresLeaseWhenMutableScheduleNoLongerResolves() {
-        AccountDescriptor profile = configuredActiveProfile("Bear checkpoint lease ");
-        BearTrapSessionLease.Lease original =
-                BearTrapSessionLease.acquireForBearExecution(profile).orElseThrow();
-        assertTrue(BearSessionCheckpoint.open(profile, original.eventEnd()));
-        BearTrapSessionLease.releaseForQueueStop(profile.getId());
-        assertTrue(ConfigService.obtain().writeAccountSetting(
-                profile, BEAR_TRAP_SCHEDULE_DATETIME_STRING, "01-01-2035 00:00"));
-
-        BearTrapSessionLease.Lease restored =
-                BearTrapSessionLease.acquireForBearExecution(profile).orElseThrow();
-        assertEquals(original.eventEnd(), restored.eventEnd());
-    }
-
     private static AccountDescriptor reload(Long profileId) {
         return ProfileService.obtain().fetchAllAccounts().stream()
                 .filter(candidate -> profileId.equals(candidate.getId()))
@@ -350,7 +256,7 @@ class TaskQueueBearSessionLeaseTest {
 
     private static AccountDescriptor configuredActiveProfile(String prefix) {
         AccountDescriptor profile = new AccountDescriptor(
-                null, prefix + UUID.randomUUID(), "0", true, 100L, 30L);
+                null, prefix + UUID.randomUUID(), "0", false, 100L, 30L);
         assertTrue(ProfileService.obtain().createAccount(profile));
         LocalDateTime activationUtc = LocalDateTime.now(ZoneOffset.UTC).withSecond(0).withNano(0);
         assertTrue(ConfigService.obtain().writeAccountSetting(profile, BEAR_TRAP_EVENT_BOOL, "true"));
@@ -506,14 +412,6 @@ class TaskQueueBearSessionLeaseTest {
             } else {
                 super.runNow(kind, recurring);
             }
-        }
-
-        @Override
-        protected DelayedTask createTask(TpDailyTaskEnum kind) {
-            if (kind == TpDailyTaskEnum.BEAR_TRAP) {
-                return new RecordingBearTask(getProfile());
-            }
-            return super.createTask(kind);
         }
     }
 }
