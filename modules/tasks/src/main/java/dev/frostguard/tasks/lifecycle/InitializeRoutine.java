@@ -200,7 +200,7 @@ public class InitializeRoutine extends DelayedTask {
 
 		if (!isStarted) {
 			awaitEmulatorRunning(
-					() -> emuManager.isRunning(EMULATOR_NUMBER),
+					() -> emuManager.isReadyForAppLaunch(EMULATOR_NUMBER),
 					() -> {
 						logInfo("Emulator not found. Attempting to start it...");
 						emuManager.launchEmulator(EMULATOR_NUMBER);
@@ -211,8 +211,8 @@ public class InitializeRoutine extends DelayedTask {
 					},
 					this::checkPreemption);
 			isStarted = true;
-			lastVerifiedStartupState = "emulator running";
-			logInfo("Emulator is running.");
+			lastVerifiedStartupState = "emulator ready for app launch";
+			logInfo("Emulator finished booting and is ready for Whiteout.");
 		}
 	}
 

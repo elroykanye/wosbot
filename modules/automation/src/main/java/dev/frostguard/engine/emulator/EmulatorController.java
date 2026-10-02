@@ -200,6 +200,7 @@ public class EmulatorController {
     public void    forceStopApp(String i, String pkg)     { requireBackend(); backend.forceStopApp(i, pkg); }
     public void    sendGameToBackground(String i)         { requireBackend(); backend.sendGameToBackground(i); }
     public boolean isRunning(String i)                    { requireBackend(); return backend.isRunning(i); }
+    public boolean isReadyForAppLaunch(String i)          { requireBackend(); return backend.isReadyForAppLaunch(i); }
     public boolean isPackageRunning(String i, String pkg) { requireBackend(); return backend.isPackageRunning(i, pkg); }
     public boolean waitForNotRespondingApp(String i)      { requireBackend(); return backend.waitForNotRespondingApp(i); }
     public void    restartAdbServer()                     { requireBackend(); backend.restartAdb(); }

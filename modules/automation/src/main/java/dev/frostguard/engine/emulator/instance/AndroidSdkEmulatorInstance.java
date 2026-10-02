@@ -108,4 +108,18 @@ public final class AndroidSdkEmulatorInstance extends EmulatorInstance {
             return false;
         }
     }
+
+    @Override
+    public boolean isReadyForAppLaunch(String identifier) {
+        if (!isRunning(identifier)) {
+            return false;
+        }
+        try {
+            return emuMi.isReady(resolveConsolePort(identifier));
+        } catch (IllegalArgumentException unsupported) {
+            LOG.warn("Cannot establish EmuMi launch readiness for {}: {}",
+                    getDeviceSerial(identifier), unsupported.getMessage());
+            return false;
+        }
+    }
 }

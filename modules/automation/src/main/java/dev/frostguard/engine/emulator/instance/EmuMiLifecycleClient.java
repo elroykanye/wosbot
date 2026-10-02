@@ -1,5 +1,7 @@
 package dev.frostguard.engine.emulator.instance;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +25,7 @@ final class EmuMiLifecycleClient {
     private final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(CONNECT_TIMEOUT)
             .build();
+    private final ObjectMapper mapper = new ObjectMapper();
 
     boolean start(int adbPort) {
         return post(adbPort, "start");
@@ -30,6 +33,39 @@ final class EmuMiLifecycleClient {
 
     boolean stop(int adbPort) {
         return post(adbPort, "stop");
+    }
+
+    boolean isReady(int adbPort) {
+        Optional<URI> endpoint = discoverEndpoint();
+        if (endpoint.isEmpty()) {
+            LOG.warn("EmuMi readiness is unavailable for ADB {}; app launch remains blocked", adbPort);
+            return false;
+        }
+        URI uri = endpoint.get().resolve("/api/ports/" + adbPort + "/readiness");
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(REQUEST_TIMEOUT)
+                .GET()
+                .build();
+        try {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                LOG.warn("EmuMi readiness probe failed for ADB {} (HTTP {}): {}", adbPort,
+                        response.statusCode(), response.body());
+                return false;
+            }
+            JsonNode body = mapper.readTree(response.body());
+            boolean ready = body.path("ready").asBoolean(false);
+            if (!ready) {
+                LOG.debug("EmuMi reports ADB {} is not launch-ready: {} ({})", adbPort,
+                        body.path("phase").asText("unknown"), body.path("message").asText(""));
+            }
+            return ready;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (IOException | IllegalArgumentException failure) {
+            LOG.warn("Could not read EmuMi readiness for ADB {}: {}", adbPort, failure.getMessage());
+        }
+        return false;
     }
 
     private boolean post(int adbPort, String action) {

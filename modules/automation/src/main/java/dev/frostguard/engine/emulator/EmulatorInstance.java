@@ -46,6 +46,15 @@ public abstract class EmulatorInstance {
     public    abstract void    closeEmulator(String idx);
     public    abstract boolean isRunning(String idx);
 
+    /**
+     * Returns whether Android has completed the backend-specific startup sequence and can safely
+     * accept an application launch. Backends without a richer lifecycle contract use their normal
+     * running probe.
+     */
+    public boolean isReadyForAppLaunch(String idx) {
+        return isRunning(idx);
+    }
+
     protected EmulatorInstance(String consolePath) {
         this(consolePath, "");
     }
@@ -432,11 +441,26 @@ public abstract class EmulatorInstance {
     }
 
     public void launchApp(String idx, String pkg) {
+        awaitAppLaunchReadiness(idx);
         withRetries(idx, dev -> {
             try { dev.executeShellCommand("monkey -p " + pkg + " -c android.intent.category.LAUNCHER 1", new NullOutputReceiver()); LOG.info("Launched {} on {}", pkg, idx); }
             catch (Exception e) { throw new RuntimeException(e); }
             return Boolean.TRUE;
         }, "launch");
+    }
+
+    private void awaitAppLaunchReadiness(String idx) {
+        for (int attempt = 0; attempt < 90; attempt++) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new ADBConnectionException("Interrupted while waiting to launch an app on " + idx);
+            }
+            if (isReadyForAppLaunch(idx)) {
+                return;
+            }
+            sleep(2000);
+        }
+        throw new ADBConnectionException(
+                "Emulator " + idx + " did not become ready for app launch within 180 seconds");
     }
 
     public void forceStopApp(String idx, String pkg) {
